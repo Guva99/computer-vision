@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Logs / captures
+*.log
+captures/
+downloads/
+
+# Local Claude config
+.claude/
+
+# Windows reserved-name artifact
+nul
+
+# Editor
+.vscode/
+.idea/
