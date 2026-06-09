@@ -68,23 +68,36 @@ def build_link_spheres(
     T_cr: np.ndarray,
     link_radii_m: Sequence[float],
     spheres_per_link: int = 8,
+    gripper_length_m: float = 0.0,
+    gripper_radius_m: float = 0.05,
 ) -> List[LinkSphere]:
-    """Collision spheres along DH links in camera frame."""
-    positions_robot = fk_joints(tuple(joint_angles[:6]))
+    """Collision spheres along DH links in camera frame.
+
+    При gripper_length_m>0 добавляется сегмент J6(фланец)→TCP(кончик хвата),
+    помеченный 'gripper' — чтобы пальцы хвата были покрыты сферами и контакт
+    с объектом читался корректно (а не как расстояние до фланца).
+    """
+    positions_robot = fk_joints(tuple(joint_angles[:6]), gripper_length_m=gripper_length_m)
     spheres: List[LinkSphere] = []
     n_per = max(2, int(spheres_per_link))
 
+    # Сегменты: 6 звеньев робота + (опц.) хват J6→TCP
+    segments = []  # (i0, i1, radius_m, part)
     for link_i in range(6):
-        p0 = np.asarray(positions_robot[link_i], dtype=np.float64)
-        p1 = np.asarray(positions_robot[link_i + 1], dtype=np.float64)
+        r = float(link_radii_m[link_i]) if link_i < len(link_radii_m) else 0.08
+        segments.append((link_i, link_i + 1, r, _link_part_name(link_i)))
+    if gripper_length_m > 0.0 and len(positions_robot) > 7:
+        segments.append((6, 7, float(gripper_radius_m), "gripper"))
+
+    for i0, i1, radius, part in segments:
+        p0 = np.asarray(positions_robot[i0], dtype=np.float64)
+        p1 = np.asarray(positions_robot[i1], dtype=np.float64)
         h0 = np.array([p0[0], p0[1], p0[2], 1.0], dtype=np.float64)
         h1 = np.array([p1[0], p1[1], p1[2], 1.0], dtype=np.float64)
         c0 = (T_cr @ h0)[:3]
         c1 = (T_cr @ h1)[:3]
         if c0[2] <= 1e-4 and c1[2] <= 1e-4:
             continue
-        radius = float(link_radii_m[link_i]) if link_i < len(link_radii_m) else 0.08
-        part = _link_part_name(link_i)
         for j in range(n_per):
             t = j / (n_per - 1) if n_per > 1 else 0.5
             center = c0 + t * (c1 - c0)
@@ -332,7 +345,14 @@ def detect_scene_objects_2d(
         return [], obj_mask_u8
 
     valid_2d = valid_flat.reshape(h, w)
-    obj_mask = valid_2d & (manipulator_mask == 0)
+    # Исключаем РАЗДУТУЮ маску руки: тонкий ореол краёв/деталей самой руки (белый
+    # пластик KUKA) иначе проходит как «чужой объект» вплотную → ложный DANGER.
+    manip_excl = manipulator_mask
+    ex_px = int(getattr(cfg, "collision_obj_manip_exclude_dilate_px", 0))
+    if ex_px > 0 and np.count_nonzero(manipulator_mask) > 0:
+        k_ex = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ex_px + 1, 2 * ex_px + 1))
+        manip_excl = cv2.dilate(manipulator_mask, k_ex, iterations=1)
+    obj_mask = valid_2d & (manip_excl == 0)
 
     # Colour/brightness gate: keep only contrasting objects, drop the dark table.
     if (

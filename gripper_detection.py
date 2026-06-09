@@ -51,11 +51,18 @@ def draw_fk_projections(
     radius: int = 7,
     color_bgr: Optional[Tuple[int, int, int]] = None,
     draw_skeleton: bool = True,
+    link_thickness_px: Optional[List[float]] = None,
+    skeleton_alpha: float = 1.0,
+    point_indices: Optional[List[int]] = None,
 ) -> None:
     """Draw FK-projected joint positions (and skeleton lines) onto image in-place.
 
     color_bgr — если задан, все суставы рисуются одним цветом (иначе каждый своим).
     draw_skeleton — рисовать линии между суставами (FK-скелет).
+    link_thickness_px — толщина каждого звена в пикселях (объёмный «капсульный» скелет,
+        обтягивающий тело руки). None = тонкая ось 2px, как раньше.
+    skeleton_alpha — прозрачность толстого скелета (0..1). <1 = полупрозрачно,
+        чтобы рука просвечивала. Точки/подписи рисуются непрозрачно поверх.
     """
     default_colors = [
         (255, 0, 0), (0, 128, 255), (0, 255, 0),
@@ -65,6 +72,10 @@ def draw_fk_projections(
 
     # Рисуем линии скелета между соседними суставами
     if draw_skeleton:
+        # Толстый полупрозрачный скелет рисуем на отдельном слое и смешиваем
+        thick = link_thickness_px is not None
+        blend = thick and 0.0 < skeleton_alpha < 1.0
+        layer = image_bgr.copy() if blend else image_bgr
         for i in range(len(joint_uvs) - 1):
             uv0, uv1 = joint_uvs[i], joint_uvs[i + 1]
             if uv0 is None or uv1 is None:
@@ -74,11 +85,22 @@ def draw_fk_projections(
             if not (0 <= u0 < w and 0 <= v0 < h and 0 <= u1 < w and 0 <= v1 < h):
                 continue
             c = color_bgr if color_bgr is not None else default_colors[i % len(default_colors)]
-            cv2.line(image_bgr, (u0, v0), (u1, v1), c, 2, cv2.LINE_AA)
+            if thick:
+                t0 = link_thickness_px[i] if i < len(link_thickness_px) else 4.0
+                t1 = link_thickness_px[i + 1] if i + 1 < len(link_thickness_px) else t0
+                th = int(max(2, round(0.5 * (t0 + t1))))
+            else:
+                th = 2
+            cv2.line(layer, (u0, v0), (u1, v1), c, th, cv2.LINE_AA)
+        if blend:
+            cv2.addWeighted(layer, skeleton_alpha, image_bgr, 1.0 - skeleton_alpha, 0.0, image_bgr)
 
-    # Рисуем точки суставов поверх линий
+    # Рисуем точки суставов поверх линий.
+    # point_indices — какие точки рисовать (None = все). Напр. [последний] = только TCP.
     for i, uv in enumerate(joint_uvs):
         if uv is None:
+            continue
+        if point_indices is not None and i not in point_indices:
             continue
         u, v = int(round(uv[0])), int(round(uv[1]))
         if not (0 <= u < w and 0 <= v < h):

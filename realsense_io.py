@@ -16,10 +16,14 @@ class AppConfig:
     robot_ip: str = "192.168.17.2"
     robot_port: int = 7000
     # real-time: не блокировать цикл на чтении робота
-    robot_read_timeout_s: float = 0.05   # макс. ожидание ответа $AXIS_ACT (сек)
+    robot_read_timeout_s: float = 0.2    # макс. ожидание ответа $AXIS_ACT (сек); контроллер под нагрузкой отвечает ~60мс
     robot_read_every_n: int = 2          # читать углы раз в N кадров (углы меняются плавно)
     o3d_render_every_n: int = 3          # обновлять тяжёлый 3D-рендер раз в N кадров
     show_o3d_window: bool = False        # 3D-окно Open3D (~60 мс/кадр). True = для скринов в статью
+    # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
+    fk_skeleton_thick: bool = True       # False = тонкая ось 2px
+    fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)
+    fk_skeleton_thick_scale: float = 0.7 # множитель толщины (1.0 = полный радиус коллизии)
     output_dir: str = "captures"
     # Детекция хвата на RGB (тёмный инструмент, светлый фон)
     show_gripper_overlay: bool = False
@@ -84,7 +88,7 @@ class AppConfig:
     robot_mask_depth_eps_m: float = 0.09
     robot_mask_min_pixels: int = 10
     manipulator_hold_frames: int = 3  # было 8; меньше = маска руки меньше отстаёт при движении
-    show_robot_mask_overlay: bool = True
+    show_robot_mask_overlay: bool = False  # жёлтый контур манипулятора убран — оставляем только фиолетовый FK-скелет
     robot_mask_overlay_min_area_px: int = 1200
     use_manipulator_only_mode: bool = True
     manipulator_arm_gray_min: int = 150
@@ -144,6 +148,7 @@ class AppConfig:
     # Collision: FK spheres vs scene objects (camera frame, metres)
     enable_collision: bool = True
     collision_link_radii_m: tuple = (0.16, 0.13, 0.11, 0.095, 0.075, 0.065)
+    collision_gripper_radius_m: float = 0.05  # радиус сфер пальцев хвата (J6→TCP)
     collision_spheres_per_link: int = 8
     collision_voxel_m: float = 0.01
     collision_ransac_dist_m: float = 0.005
@@ -190,6 +195,9 @@ class AppConfig:
     collision_obj_use_near_manip: bool = True
     collision_obj_near_manip_dilate_px: int = 130
     collision_obj_max_depth_behind_arm_m: float = 0.20
+    # Исключение ореола руки: вычитаем раздутую маску манипулятора из кандидатов,
+    # чтобы белые края/детали самой руки не считались «чужим объектом» вплотную.
+    collision_obj_manip_exclude_dilate_px: int = 21
     # Цветовой фильтр объектов: брать только контрастные пятна (светлые ИЛИ
     # насыщенные по цвету), тёмный десатурированный стол отсекается.
     collision_obj_color_gate: bool = True
