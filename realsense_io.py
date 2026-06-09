@@ -172,6 +172,12 @@ class AppConfig:
     collision_object_max_extent_m: float = 0.8
     collision_warn_dist_m: float = 0.12
     collision_danger_dist_m: float = 0.05
+    # Фильтр временной устойчивости: объект засчитывается только если виден
+    # >=N кадров подряд примерно в одном месте. Мигающие протечки руки (шум
+    # глубины на белом пластике) скачут по кадру → отсекаются; кубик стабилен.
+    collision_persist_frames: int = 3      # сколько кадров подряд нужно подтверждение
+    collision_track_match_m: float = 0.05  # порог сопоставления объекта между кадрами (м)
+    collision_track_max_miss: int = 3      # удалять трек после N пропусков
     collision_focus_parts: tuple = ("gripper", "wrist", "arm")
     # Hybrid collision: body distance from manipulator-mask cloud (measured),
     # gripper from FK sphere (no depth on dark metal). Voxel for body cloud.
@@ -197,7 +203,9 @@ class AppConfig:
     collision_obj_max_depth_behind_arm_m: float = 0.20
     # Исключение ореола руки: вычитаем раздутую маску манипулятора из кандидатов,
     # чтобы белые края/детали самой руки не считались «чужим объектом» вплотную.
-    collision_obj_manip_exclude_dilate_px: int = 21
+    # ВАЖНО: большое значение «съедает» кубик при подходе руки → контакт не доходит
+    # до 0 → нет DANGER. Держим маленьким (только тонкий край смешанных пикселей).
+    collision_obj_manip_exclude_dilate_px: int = 6
     # Цветовой фильтр объектов: брать только контрастные пятна (светлые ИЛИ
     # насыщенные по цвету), тёмный десатурированный стол отсекается.
     collision_obj_color_gate: bool = True

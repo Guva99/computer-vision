@@ -35,6 +35,41 @@ class CollisionService:
                 cfg.collision_log_path, cfg.collision_log_every_n
             )
         self._bbox_geoms: list = []
+        self._tracks: list = []  # временная устойчивость объектов (анти-мигание протечек руки)
+
+    def _confirm_objects(self, scene_objects):
+        """Оставить только объекты, стабильно видимые >=N кадров в одном месте.
+        Мигающие протечки руки (случайные места) отсекаются, кубик проходит."""
+        cfg = self.cfg
+        match_m = cfg.collision_track_match_m
+        used = set()
+        for obj in scene_objects:
+            c = np.asarray(obj.centroid, dtype=np.float64)
+            best_i, best_d = -1, match_m
+            for i, t in enumerate(self._tracks):
+                if i in used:
+                    continue
+                d = float(np.linalg.norm(c - t["centroid"]))
+                if d < best_d:
+                    best_d, best_i = d, i
+            if best_i >= 0:
+                t = self._tracks[best_i]
+                t["centroid"] = c
+                t["hits"] = min(t["hits"] + 1, 9999)
+                t["miss"] = 0
+                t["obj"] = obj
+                used.add(best_i)
+            else:
+                self._tracks.append({"centroid": c, "hits": 1, "miss": 0, "obj": obj})
+                used.add(len(self._tracks) - 1)
+        # состарить несопоставленные треки
+        for i, t in enumerate(self._tracks):
+            if i not in used:
+                t["miss"] += 1
+        self._tracks = [t for t in self._tracks if t["miss"] <= cfg.collision_track_max_miss]
+        # подтверждённые: достаточно подтверждений И сопоставлены в этом кадре
+        return [t["obj"] for t in self._tracks
+                if t["hits"] >= cfg.collision_persist_frames and t["miss"] == 0]
 
     def evaluate(self, masks, fk_projector, points, colors, valid_flat,
                  color_bgr, intrinsics, joint_angles, frame_count, vis) -> CollisionFrame:
@@ -67,6 +102,9 @@ class CollisionService:
             cf.scene_objects = collision_mod.detect_scene_objects(
                 scene_pts, scene_col, cfg
             )
+        # Фильтр устойчивости: отсечь мигающие протечки руки, оставить стабильные
+        if cfg.collision_persist_frames > 1:
+            cf.scene_objects = self._confirm_objects(cf.scene_objects)
         # Растеризация точек объектов нужна только для debug-мозаики
         # (Python-цикл по точкам — дорого). Строим лишь когда показываем debug.
         if cfg.show_debug_masks:

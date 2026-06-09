@@ -1,26 +1,34 @@
 """
-Extrinsic calibration: click TCP in image → FK → solvePnP.
-No printed board required.
+Extrinsic calibration: click a robot JOINT in the image → choose which joint →
+FK → solvePnP. No printed board required.
+
+Why click different joints (not only TCP)
+------------------------------------------
+PnP needs points spread in DEPTH. Clicking only the TCP puts every point at one
+height → depth is weakly constrained → collision distances drift.
+Instead click DIFFERENT joints (J2/J3 high, J5/J6 mid, TCP low). Even in a single
+robot pose they span Z≈0..470 mm, which fixes the depth. The robot may keep
+rotating only A1 — height variation comes from the joints, not from moving A2/A3.
 
 Workflow
 --------
   1. Run:  python calibrate_click_fk.py
-  2. Move robot to any pose.
-  3. CLICK on the TCP tip in the camera window.
-     Robot angles are read automatically → FK → 3D point stored.
-  4. Repeat ≥10 times with different robot poses.
-  5. Press  c  to compute and save extrinsic.json.
+  2. Put the robot in a pose.
+  3. CLICK on a visible joint centre in the image.
+  4. Press the joint key:  1=J1 2=J2 3=J3 4=J4 5=J5 6=J6  t=TCP
+     → angles are read from the robot, that joint's 3D point is stored.
+  5. Click several joints per pose (different heights!). Rotate A1, repeat.
+  6. Collect ≥15 points across heights → press  c  to solve & save.
 
-Keys: c=solve & save   d=delete last point   r=reset all   q=quit
+Keys: 1-6/t = assign joint   c = solve & save   d = delete last   r = reset   q = quit
 
-If robot not connected, use:  python calibrate_click_fk.py --no-robot
-  (you will be prompted to type joint angles in the terminal after each click)
+If robot not connected:  python calibrate_click_fk.py --no-robot
+  (after the joint key you type the 6 joint angles in the terminal)
 """
 
 import argparse
 import json
 import sys
-import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -49,8 +57,38 @@ except ImportError:
     print("[WARN] pyrealsense2 not found — using webcam.")
 
 
+# fk_joints returns [base(0), J1(1), J2(2), J3(3), J4(4), J5(5), J6(6), TCP(last)]
+# Key → (joint index in fk_joints output, label). TCP uses -1 = last point (tip).
+_KEY_TO_JOINT = {
+    ord("1"): (1, "J1"),
+    ord("2"): (2, "J2"),
+    ord("3"): (3, "J3"),
+    ord("4"): (4, "J4"),
+    ord("5"): (5, "J5"),
+    ord("6"): (6, "J6"),
+    ord("t"): (-1, "TCP"),
+}
+
+_WINDOW = "Calibration  [CLICK joint -> press 1-6/t | c=solve | d=del | r=reset | q=quit]"
+
+
+# ── state ─────────────────────────────────────────────────────────────────────
+_img_pts: List[np.ndarray] = []
+_obj_pts: List[np.ndarray] = []
+_labels: List[str] = []
+_pending_click: Optional[Tuple[int, int]] = None
+
+
+def _mouse_cb(event, x, y, _flags, _param):
+    global _pending_click
+    if event == cv2.EVENT_LBUTTONDOWN:
+        _pending_click = (x, y)
+
+
+# ── robot ─────────────────────────────────────────────────────────────────────
+
 def _connect_robot(ip: str, port: int, timeout: float = 3.0) -> Optional["OpenShowVar"]:
-    """Try to connect to KUKA VarProxy with a short timeout. Returns None on failure."""
+    """Connect to KUKA VarProxy with a short timeout. Returns None on failure."""
     if not OSV_AVAILABLE:
         return None
     print(f"Connecting to KUKA at {ip}:{port} ...")
@@ -60,7 +98,7 @@ def _connect_robot(ip: str, port: int, timeout: float = 3.0) -> Optional["OpenSh
         sock.connect((ip, port))
         sock.settimeout(None)
         osv = OpenShowVar(ip, port)
-        osv.sock = sock          # reuse the already-open socket
+        osv.sock = sock
         print(f"[OK] Robot connected: {ip}:{port}")
         return osv
     except (socket.timeout, socket.error, OSError) as e:
@@ -70,21 +108,11 @@ def _connect_robot(ip: str, port: int, timeout: float = 3.0) -> Optional["OpenSh
 
 
 def _read_joint_angles(osv: "OpenShowVar") -> Optional[np.ndarray]:
-    """
-    Read $AXIS_ACT from robot → (A1..A6) as float array, or None.
-
-    Raw format (KUKA E6AXIS struct):
-        E6AXIS: A1 -39.6693 A2 -26.4447 A3 120.5337 A4 -0.8537 A5 -90.8575
-        A6 3.4721 E1 0.0 E2 0.0 ...
-    We locate each axis label A1..A6 and take the token right after it.
-    """
+    """Read $AXIS_ACT → (A1..A6) float array, or None. Finds each axis label."""
     try:
         raw = osv.read("$AXIS_ACT", False).decode(errors="ignore")
-        # normalise separators: drop braces, struct name, commas, colons
-        cleaned = raw.replace("{", " ").replace("}", " ") \
-                     .replace(",", " ").replace(":", " ")
+        cleaned = raw.replace("{", " ").replace("}", " ").replace(",", " ").replace(":", " ")
         parts = cleaned.split()
-
         angles = []
         for axis in ("A1", "A2", "A3", "A4", "A5", "A6"):
             if axis in parts:
@@ -98,20 +126,18 @@ def _read_joint_angles(osv: "OpenShowVar") -> Optional[np.ndarray]:
         print(f"[WARN] Could not read angles: {e}")
     return None
 
-_WINDOW = "Calibration  [CLICK = add point | c=solve | d=delete | r=reset | q=quit]"
 
-
-# ── state ─────────────────────────────────────────────────────────────────────
-_img_pts: List[np.ndarray] = []
-_obj_pts: List[np.ndarray] = []
-_pending_click: Optional[Tuple[int, int]] = None
-_status: str = ""
-
-
-def _mouse_cb(event, x, y, _flags, _param):
-    global _pending_click
-    if event == cv2.EVENT_LBUTTONDOWN:
-        _pending_click = (x, y)
+def _ask_angles_terminal() -> Optional[np.ndarray]:
+    """Manual fallback: read 6 joint angles from the terminal."""
+    raw = input("  Joint angles A1..A6 [degrees, space-separated]: ").strip()
+    parts = raw.replace(",", " ").split()
+    if len(parts) == 6:
+        try:
+            return np.array([float(p) for p in parts], dtype=np.float64)
+        except ValueError:
+            pass
+    print("  [ERROR] Expected 6 numbers — skipped.")
+    return None
 
 
 # ── camera ────────────────────────────────────────────────────────────────────
@@ -121,14 +147,9 @@ def _open_realsense():
     cfg = rs.config()
     cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     profile = pipeline.start(cfg)
-    intr = (
-        profile.get_stream(rs.stream.color)
-        .as_video_stream_profile()
-        .intrinsics
-    )
+    intr = profile.get_stream(rs.stream.color).as_video_stream_profile().intrinsics
     return pipeline, {
-        "fx": intr.fx, "fy": intr.fy,
-        "cx": intr.ppx, "cy": intr.ppy,
+        "fx": intr.fx, "fy": intr.fy, "cx": intr.ppx, "cy": intr.ppy,
         "width": intr.width, "height": intr.height,
     }
 
@@ -146,9 +167,10 @@ def _get_webcam_frame(cap) -> Optional[np.ndarray]:
 
 # ── FK ────────────────────────────────────────────────────────────────────────
 
-def _tcp_3d(angles_deg: np.ndarray, gripper_m: float) -> np.ndarray:
+def _joint_3d(angles_deg: np.ndarray, joint_idx: int, gripper_m: float) -> np.ndarray:
+    """3D position (m, robot base frame) of the requested joint. joint_idx=-1 → TCP tip."""
     positions = fk_joints(tuple(angles_deg), gripper_length_m=gripper_m)
-    return positions[-1].copy()
+    return positions[joint_idx].copy()
 
 
 # ── solve & save ──────────────────────────────────────────────────────────────
@@ -156,7 +178,7 @@ def _tcp_3d(angles_deg: np.ndarray, gripper_m: float) -> np.ndarray:
 def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
     n = len(_img_pts)
     if n < 4:
-        print(f"[ERROR] Need ≥4 points, have {n}.")
+        print(f"[ERROR] Need >=4 points, have {n}.")
         return False
 
     obj = np.array(_obj_pts, dtype=np.float64)
@@ -168,12 +190,15 @@ def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
     ], dtype=np.float64)
     dist = np.zeros(5, dtype=np.float64)
 
+    # Diagnostics: spread of object points in depth (Z range) — мера обусловленности
+    z_span_mm = float(obj[:, 2].max() - obj[:, 2].min()) * 1000.0
+    print(f"[INFO] Объекты по высоте/глубине: Z-разброс = {z_span_mm:.0f} мм "
+          f"({'мало — добавь точки по высоте!' if z_span_mm < 150 else 'ок'})")
+
     ok, r_vec, t_vec, inl = cv2.solvePnPRansac(
         obj, img, cam_mat, dist,
         flags=cv2.SOLVEPNP_ITERATIVE,
-        iterationsCount=2000,
-        reprojectionError=4.0,
-        confidence=0.999,
+        iterationsCount=2000, reprojectionError=4.0, confidence=0.999,
     )
     if not ok:
         print("[ERROR] solvePnPRansac failed — try more / better-spread points.")
@@ -204,7 +229,8 @@ def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
         "rms_px": rms,
         "n_points": n,
         "n_inliers": n_inl,
-        "method": "solvePnPRansac+RefineLM/TCP",
+        "z_span_mm": z_span_mm,
+        "method": "solvePnPRansac+RefineLM/multi-joint",
         "intrinsics": intrinsics,
     }, indent=2))
     print(f"[SAVED] {out_path.resolve()}")
@@ -213,55 +239,48 @@ def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
 
 # ── overlay ───────────────────────────────────────────────────────────────────
 
-def _draw(frame: np.ndarray, waiting_input: bool,
-          pending_uv: Optional[Tuple[int, int]],
-          robot_connected: bool) -> np.ndarray:
+def _draw(frame, pending_uv, robot_connected) -> np.ndarray:
     out = frame.copy()
 
-    # robot connection status bar
-    conn_txt = "Robot: CONNECTED" if robot_connected else "Robot: NOT connected (enter angles in terminal)"
+    conn_txt = "Robot: CONNECTED" if robot_connected else "Robot: NOT connected (type angles in terminal)"
     conn_color = (0, 200, 0) if robot_connected else (0, 80, 255)
     cv2.rectangle(out, (0, 0), (out.shape[1], 28), (0, 0, 0), -1)
-    cv2.putText(out, conn_txt, (8, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, conn_color, 1, cv2.LINE_AA)
+    cv2.putText(out, conn_txt, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, conn_color, 1, cv2.LINE_AA)
 
-    # stored points
-    for i, uv in enumerate(_img_pts):
+    # stored points with their joint label
+    for i, (uv, lbl) in enumerate(zip(_img_pts, _labels)):
         u, v = int(uv[0]), int(uv[1])
-        cv2.circle(out, (u, v), 7, (0, 220, 0), 2)
-        cv2.putText(out, f"P{i+1}", (u + 9, v - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 0), 1)
+        cv2.circle(out, (u, v), 6, (0, 220, 0), 2)
+        cv2.putText(out, f"{i+1}:{lbl}", (u + 8, v - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 0), 1)
 
-    # pending click (orange crosshair)
+    # pending click — waiting for a joint key
     if pending_uv is not None:
         x, y = pending_uv
         cv2.line(out, (x - 14, y), (x + 14, y), (0, 130, 255), 2)
         cv2.line(out, (x, y - 14), (x, y + 14), (0, 130, 255), 2)
         cv2.circle(out, (x, y), 8, (0, 130, 255), 2)
+        cv2.rectangle(out, (0, 30), (out.shape[1], 58), (0, 0, 0), -1)
+        cv2.putText(out, "Press joint key:  1=J1 2=J2 3=J3 4=J4 5=J5 6=J6  t=TCP",
+                    (8, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1, cv2.LINE_AA)
 
-    # waiting banner
-    if waiting_input:
-        cv2.rectangle(out, (0, 30), (out.shape[1], 70), (0, 0, 0), -1)
-        cv2.putText(out, ">>> Type 6 joint angles in the TERMINAL below, then press Enter <<<",
-                    (8, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 200, 255), 1, cv2.LINE_AA)
-
-    # bottom hint
+    # legend + counter (с разбивкой по высоте)
     n = len(_img_pts)
-    hint = (f"{n} point(s) — need >=4 (aim for >=12)"
-            if n < 10 else f"{n} point(s) — press c to solve & save")
-    cv2.rectangle(out, (0, out.shape[0] - 32), (out.shape[1], out.shape[0]), (0, 0, 0), -1)
-    cv2.putText(out, hint, (8, out.shape[0] - 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 220, 0), 1, cv2.LINE_AA)
-    if _status:
-        cv2.putText(out, _status, (8, out.shape[0] - 3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 210, 255), 1, cv2.LINE_AA)
+    z_hint = ""
+    if n >= 2:
+        zs = np.array([p[2] for p in _obj_pts]) * 1000.0
+        z_hint = f"  Z-разброс={zs.max()-zs.min():.0f}мм"
+    hint = f"{n} pts{z_hint}  |  1-6/t=assign  c=solve  d=del  r=reset  q=quit"
+    cv2.rectangle(out, (0, out.shape[0] - 24), (out.shape[1], out.shape[0]), (0, 0, 0), -1)
+    cv2.putText(out, hint, (8, out.shape[0] - 7),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 220, 0), 1, cv2.LINE_AA)
     return out
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    global _pending_click, _status
+    global _pending_click
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="extrinsic.json")
@@ -269,7 +288,7 @@ def main():
     ap.add_argument("--robot-port", type=int, default=7000)
     ap.add_argument("--no-robot", action="store_true")
     ap.add_argument("--gripper-length-mm", type=float, default=137.0,
-                    help="Tool length flange→TCP tip in mm (default 137)")
+                    help="Tool length flange->TCP tip in mm (default 137)")
     args = ap.parse_args()
 
     if not FK_AVAILABLE:
@@ -279,22 +298,19 @@ def main():
     gripper_m = args.gripper_length_mm / 1000.0
     out_path = Path(args.out)
 
-    # robot — fast connect with 3-second timeout (same as main.py approach)
     osv = None
     if not args.no_robot:
         osv = _connect_robot(args.robot_ip, args.robot_port, timeout=3.0)
+    robot_connected = osv is not None
 
-    # camera
     pipeline = cap = None
     intrinsics: dict = {}
-
     if REALSENSE_AVAILABLE:
         try:
             pipeline, intrinsics = _open_realsense()
             print("[OK] RealSense opened.")
         except Exception as e:
             print(f"[WARN] RealSense failed ({e}), trying webcam.")
-
     if pipeline is None:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
@@ -307,115 +323,66 @@ def main():
     cv2.namedWindow(_WINDOW, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(_WINDOW, _mouse_cb)
 
-    print("\n=== Click-TCP Extrinsic Calibration ===")
-    print("► Move robot to any pose, then CLICK on the TCP tip in the window.")
-    print("► Repeat ≥10 times with varied poses.")
-    print("► Press  c = solve & save   d = delete last   r = reset   q = quit\n")
-
-    robot_connected = osv is not None
-    frozen_frame: Optional[np.ndarray] = None
-    waiting_input = False
-    queued_click: Optional[Tuple[int, int]] = None
-
-    # thread for manual angle input
-    input_thread: Optional[threading.Thread] = None
-    input_result: List[Optional[np.ndarray]] = [None]   # mutable container
-
-    def _read_angles_bg(click_pos, result_box):
-        try:
-            raw = input(f"  Joint angles A1..A6 for click {click_pos} [degrees, space-separated]: ").strip()
-            parts = raw.replace(",", " ").split()
-            if len(parts) == 6:
-                result_box[0] = np.array([float(p) for p in parts])
-            else:
-                print("  [ERROR] Expected 6 numbers — click skipped.")
-        except Exception:
-            pass
+    print("\n=== Multi-Joint Extrinsic Calibration ===")
+    print("► Кликни на сустав в кадре → нажми клавишу: 1=J1 2=J2 3=J3 4=J4 5=J5 6=J6 t=TCP")
+    print("► Кликай РАЗНЫЕ суставы (разная высота!): J2/J3 верх, J5/J6 середина, TCP низ")
+    print("► Набери >=15 точек по высотам → c = solve & save\n")
 
     while True:
-        # grab frame
-        if not waiting_input:
-            if pipeline is not None:
-                frame = _get_rs_frame(pipeline)
-            else:
-                frame = _get_webcam_frame(cap)
-            if frame is not None:
-                frozen_frame = frame
+        if pipeline is not None:
+            frame = _get_rs_frame(pipeline)
         else:
-            frame = frozen_frame
-
+            frame = _get_webcam_frame(cap)
         if frame is None:
             continue
 
-        # new click arrived (and we're not already waiting for input)
-        if _pending_click is not None and not waiting_input:
-            click = _pending_click
-            _pending_click = None
-
-            # try to get angles
-            angles: Optional[np.ndarray] = None
-            if osv is not None:
-                angles = _read_joint_angles(osv)
-
-            if angles is not None:
-                # robot gave angles directly — store point immediately
-                try:
-                    p3d = _tcp_3d(angles, gripper_m)
-                    _img_pts.append(np.array(click, dtype=np.float64))
-                    _obj_pts.append(p3d)
-                    _status = (f"P{len(_img_pts)}  A={np.round(angles, 1)}  "
-                               f"TCP=({p3d[0]*1000:.1f}, {p3d[1]*1000:.1f}, {p3d[2]*1000:.1f}) mm")
-                    print(f"[P{len(_img_pts)}] pixel={click}  "
-                          f"$AXIS_ACT=A1..A6={np.round(angles, 2)}  "
-                          f"TCP=({p3d[0]*1000:.1f},{p3d[1]*1000:.1f},{p3d[2]*1000:.1f}) mm")
-                except Exception as e:
-                    _status = f"FK error: {e}"
-                    print(f"[FK ERROR] {e}")
-            else:
-                # no robot — ask in terminal via background thread
-                waiting_input = True
-                queued_click = click
-                input_result[0] = None
-                input_thread = threading.Thread(
-                    target=_read_angles_bg,
-                    args=(click, input_result),
-                    daemon=True,
-                )
-                input_thread.start()
-
-        # check if background input thread finished
-        if waiting_input and input_thread is not None and not input_thread.is_alive():
-            input_thread = None
-            waiting_input = False
-            if input_result[0] is not None and queued_click is not None:
-                try:
-                    p3d = _tcp_3d(input_result[0], gripper_m)
-                    _img_pts.append(np.array(queued_click, dtype=np.float64))
-                    _obj_pts.append(p3d)
-                    _status = f"P{len(_img_pts)} stored"
-                    print(f"[P{len(_img_pts)}] pixel={queued_click}  "
-                          f"TCP=({p3d[0]*1000:.1f},{p3d[1]*1000:.1f},{p3d[2]*1000:.1f}) mm")
-                except Exception as e:
-                    _status = f"FK error: {e}"
-            else:
-                _status = "Point skipped."
-            queued_click = None
-
-        cv2.imshow(_WINDOW, _draw(frame, waiting_input, queued_click, robot_connected))
+        cv2.imshow(_WINDOW, _draw(frame, _pending_click, robot_connected))
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord("q"):
             break
         elif key == ord("r"):
-            _img_pts.clear(); _obj_pts.clear()
-            _status = "Reset — all points cleared."
+            _img_pts.clear(); _obj_pts.clear(); _labels.clear()
+            _pending_click = None
             print("[RESET]")
         elif key == ord("d"):
             if _img_pts:
                 _img_pts.pop(); _obj_pts.pop()
-                _status = f"Deleted. {len(_img_pts)} remain."
+                lbl = _labels.pop()
+                print(f"[DELETE] removed {lbl}; {len(_img_pts)} remain.")
         elif key == ord("c"):
             _solve_and_save(out_path, intrinsics)
+        elif key in _KEY_TO_JOINT:
+            # assign the pending click to the chosen joint
+            if _pending_click is None:
+                print("[SKIP] Сначала кликни на сустав, потом нажми клавишу.")
+                continue
+            joint_idx, joint_name = _KEY_TO_JOINT[key]
+
+            # get angles (robot read or manual terminal)
+            if osv is not None:
+                angles = _read_joint_angles(osv)
+            else:
+                print(f"  Назначаю {joint_name} для клика {_pending_click}")
+                angles = _ask_angles_terminal()
+            if angles is None:
+                print("[SKIP] Нет углов — точка пропущена.")
+                _pending_click = None
+                continue
+
+            try:
+                p3d = _joint_3d(angles, joint_idx, gripper_m)
+            except Exception as e:
+                print(f"[FK ERROR] {e}")
+                _pending_click = None
+                continue
+
+            _img_pts.append(np.array(_pending_click, dtype=np.float64))
+            _obj_pts.append(p3d)
+            _labels.append(joint_name)
+            print(f"[P{len(_img_pts)}] {joint_name}  pixel={_pending_click}  "
+                  f"3D=({p3d[0]*1000:.1f}, {p3d[1]*1000:.1f}, {p3d[2]*1000:.1f}) mm")
+            _pending_click = None
 
     cv2.destroyAllWindows()
     if pipeline is not None:
