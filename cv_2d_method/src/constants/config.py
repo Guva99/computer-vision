@@ -153,6 +153,7 @@ RECORDING_PATH = ''            # '' = авто captures/recordings/rec_<timestam
 RECORDING_JOINTS_EVERY_N = 5   # углы читать раз в N кадров (чтение блокирующее)
 SOURCE_MODE = 'live'           # 'live' | 'playback'
 PLAYBACK_PATH = ''             # каталог записи для воспроизведения
+MAX_RUN_SECONDS = 0.0          # автозавершение прогона (0 = без лимита)
 # В playback: робот принудительно отключён, RealSense-фильтры глубины
 # пропускаются (работают только с rs.frame живого потока).
 

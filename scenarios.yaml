@@ -1,0 +1,79 @@
+# Матрица испытаний (Задача 4) — таблица сценариев для tools/run_scenarios.py.
+#
+# Каждый сценарий = сочетание факторов; физическую установку препятствия
+# выполняет оператор (раннер делает паузу и ждёт подтверждения перед каждым
+# повтором). Поля obstacle/start_distance_m/lighting/occlusion — описательные:
+# они попадают в scenarios_index.csv и используются compute_metrics.py для
+# разбивки метрик по факторам.
+#
+# Поля:
+#   scenario_id       — уникальный идентификатор (попадает во все логи)
+#   description       — что ставим и что ожидаем (подсказка оператору)
+#   obstacle          — тип препятствия (none | cube | box | hand | ...)
+#   start_distance_m  — исходное расстояние препятствие↔траектория руки, м
+#   robot_ctrl_speed  — % override скорости цикла робота
+#   lighting          — normal | dim | bright
+#   occlusion         — есть ли частичное перекрытие препятствия рукой (true/false)
+#   danger_expected   — ожидается ли DANGER в этом сценарии (true/false) — GT
+#                       уровня прогона для сводки TP/FP
+#   repeats           — число повторов
+#   duration_s        — длительность одного прогона, сек
+
+defaults:
+  robot_ctrl_speed: 30
+  lighting: normal
+  occlusion: false
+  repeats: 5
+  duration_s: 60
+
+scenarios:
+  - scenario_id: S01_baseline_empty
+    description: "Пустая сцена, робот гоняет цикл — проверка ложных остановов"
+    obstacle: none
+    start_distance_m: null
+    danger_expected: false
+
+  - scenario_id: S02_cube_far
+    description: "Кубик на столе вне траектории (>= 25 см от прохода руки)"
+    obstacle: cube
+    start_distance_m: 0.25
+    danger_expected: false
+
+  - scenario_id: S03_cube_near
+    description: "Кубик у траектории (~10 см) — WARN, останов не обязателен"
+    obstacle: cube
+    start_distance_m: 0.10
+    danger_expected: false
+
+  - scenario_id: S04_cube_on_path
+    description: "Кубик на траектории — рука проходит вплотную, ожидается DANGER+стоп"
+    obstacle: cube
+    start_distance_m: 0.03
+    danger_expected: true
+
+  - scenario_id: S05_cube_on_path_fast
+    description: "То же, но скорость цикла выше"
+    obstacle: cube
+    start_distance_m: 0.03
+    robot_ctrl_speed: 50
+    danger_expected: true
+
+  - scenario_id: S06_cube_occluded
+    description: "Кубик частично перекрыт рукой при сближении"
+    obstacle: cube
+    start_distance_m: 0.05
+    occlusion: true
+    danger_expected: true
+
+  - scenario_id: S07_box_dim_light
+    description: "Белая коробка, приглушённый свет"
+    obstacle: box
+    start_distance_m: 0.05
+    lighting: dim
+    danger_expected: true
+
+  - scenario_id: S08_dynamic_intrusion
+    description: "Предмет вносится в зону во время движения (динамика)"
+    obstacle: cube
+    start_distance_m: null
+    danger_expected: true

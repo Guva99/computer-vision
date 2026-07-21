@@ -123,8 +123,14 @@ class AppRunner:
         try:
             self.camera.start()
             print("[INFO] Camera OK. Keys: q=quit, s=save PLY\n")
+            _run_start = time.perf_counter()
 
             while True:
+                # Автозавершение по таймеру (сценарный раннер, Задача 4)
+                if (cfg.max_run_seconds > 0
+                        and time.perf_counter() - _run_start >= cfg.max_run_seconds):
+                    print(f"[INFO] max_run_seconds={cfg.max_run_seconds:.0f}s — стоп.")
+                    break
                 _t0 = time.perf_counter()
                 frame = self.camera.get_aligned_frames()
                 if frame is None:

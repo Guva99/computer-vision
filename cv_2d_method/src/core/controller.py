@@ -35,7 +35,7 @@ from src.constants.config import (
     ENABLE_STOP_LOG, STOP_EVENTS_CSV_PATH, STOP_SPEED_EPS_DEG_S,
     STOP_CONFIRM_FRAMES_STOPPED,
     ENABLE_RECORDING, RECORDING_PATH, RECORDING_JOINTS_EVERY_N,
-    SOURCE_MODE, PLAYBACK_PATH,
+    SOURCE_MODE, PLAYBACK_PATH, MAX_RUN_SECONDS,
 )
 
 
@@ -222,9 +222,15 @@ class SystemController:
             return
         
         self._running = True
-        
+        _run_start = time.perf_counter()
+
         try:
             while self._running:
+                # Автозавершение по таймеру (сценарный раннер, Задача 4)
+                if (MAX_RUN_SECONDS > 0
+                        and time.perf_counter() - _run_start >= MAX_RUN_SECONDS):
+                    print(f"[INFO] MAX_RUN_SECONDS={MAX_RUN_SECONDS:.0f}s — стоп.")
+                    break
                 if not self._process_frame():
                     break
         except KeyboardInterrupt:

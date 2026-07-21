@@ -50,6 +50,9 @@ class AppConfig:
     recording_compress: bool = False     # True = npz со сжатием (медленнее)
     source_mode: str = "live"            # "live" | "playback"
     playback_path: str = ""              # каталог записи для реплея
+    # Автозавершение прогона через N секунд (0 = без лимита) — для
+    # сценарного раннера tools/run_scenarios.py (Задача 4).
+    max_run_seconds: float = 0.0
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)

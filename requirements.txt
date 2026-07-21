@@ -2,3 +2,5 @@ numpy
 open3d
 pyrealsense2
 opencv-contrib-python
+psutil
+pyyaml
