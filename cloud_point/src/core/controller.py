@@ -1,0 +1,457 @@
+"""
+SystemController - Главный контроллер системы.
+
+Связывает компоненты камеры и робота, управляет потоком данных
+и координирует работу всей системы.
+
+ГИБРИДНЫЙ ПОДХОД:
+- 2D детекция (OpenCV) для быстрого поиска хвата и объектов
+- Облако точек (Open3D) для 3D визуализации
+- Комбинированная проверка столкновений (2D bbox + глубина)
+"""
+import numpy as np
+from typing import Optional, Callable
+
+from src.features.camera.services.camera_service import CameraService
+from src.features.camera.processors.depth_processor import DepthProcessor
+from src.features.camera.processors.gripper_detector import GripperDetector
+from src.features.camera.processors.object_tracker import ObjectTracker
+from src.features.camera.processors.obstacle_detector import ObstacleDetector
+from src.features.camera.ui.camera_window import CameraWindow
+from src.features.camera.ui.point_cloud_window import PointCloudWindow
+from src.features.camera.ui.monitor_window import MonitorWindow
+from src.features.robot.services.robot_service import RobotService
+from src.utils.system_monitor import sample_system_stats, FPSCounter, GpuSampler, PerfLogger
+from src.constants.config import (
+    CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS,
+    STABLE_THRESHOLD, TRACK_PERSIST, GRIPPER_LOG_INTERVAL
+)
+
+
+class SystemController:
+    """
+    Главный контроллер системы.
+    
+    Координирует работу камеры, обработки изображений и робота.
+    Обеспечивает связь между компонентами и управляет жизненным циклом.
+
+    Детекция хвата, препятствий и коллизий — по RGB и карте глубины RealSense.
+    """
+    
+    def __init__(
+        self,
+        enable_robot: bool = True,
+        enable_point_cloud: bool = False,
+        robot_ip: Optional[str] = None,
+        robot_port: Optional[int] = None
+    ):
+        """
+        Инициализация контроллера.
+        
+        Args:
+            enable_robot: Включить подключение к роботу
+            enable_point_cloud: Окно Open3D (только визуализация, не детекция)
+            robot_ip: IP-адрес робота (если отличается от конфига)
+            robot_port: Порт робота (если отличается от конфига)
+        """
+        self.enable_robot = enable_robot
+        self.enable_point_cloud = enable_point_cloud
+        
+        # Компоненты камеры
+        self.camera_service: Optional[CameraService] = None
+        self.depth_processor: Optional[DepthProcessor] = None
+        self.gripper_detector: Optional[GripperDetector] = None
+        self.obstacle_detector: Optional[ObstacleDetector] = None
+        self.object_tracker: Optional[ObjectTracker] = None
+        self.camera_window: Optional[CameraWindow] = None
+        self.point_cloud_window: Optional[PointCloudWindow] = None
+        self.monitor_window: Optional[MonitorWindow] = None
+        
+        # Компоненты робота
+        self.robot_service: Optional[RobotService] = None
+        self.robot_ip = robot_ip
+        self.robot_port = robot_port
+        
+        # Мониторинг
+        self.fps_counter = FPSCounter()
+        self.gpu_sampler = GpuSampler()      # загрузка видеокарты (win32pdh)
+        self.perf_logger = PerfLogger()      # CSV-лог + сводка
+        self._gpu_val = None                 # последнее значение GPU (снимаем раз в N кадров)
+        self._frame_idx = 0
+
+        # Состояние
+        self._running = False
+        self._gripper_log_counter = 0
+        self._last_collision_state = False  # Для отслеживания изменения состояния
+        
+        # Callbacks
+        self._on_gripper_detected: Optional[Callable] = None
+        self._on_object_detected: Optional[Callable] = None
+        self._on_cycle_position: Optional[Callable] = None
+    
+    def initialize(self) -> bool:
+        """
+        Инициализирует все компоненты системы.
+        
+        Returns:
+            True если инициализация успешна
+        """
+        print("\n" + "=" * 60)
+        print("  CLOUD POINT SYSTEM - Initializing...")
+        print("=" * 60)
+        
+        # Инициализация камеры
+        self.camera_service = CameraService(
+            width=CAMERA_WIDTH,
+            height=CAMERA_HEIGHT,
+            fps=CAMERA_FPS
+        )
+        
+        if not self.camera_service.start():
+            print("Failed to start camera!")
+            return False
+        
+        # Инициализация процессоров
+        self.depth_processor = DepthProcessor(
+            depth_scale=self.camera_service.get_depth_scale()
+        )
+        self.gripper_detector = GripperDetector()
+        self.obstacle_detector = ObstacleDetector()
+        self.object_tracker = ObjectTracker()
+        
+        print("  [+] Detection: gripper / obstacles / collision (color + depth)")
+        if self.enable_point_cloud:
+            print("  [+] 3D point cloud window enabled")
+        
+        # Инициализация UI
+        self.camera_window = CameraWindow(
+            title='Camera View',
+            on_click_callback=self._on_click if self.enable_robot else None
+        )
+        
+        # Окно мониторинга системы (CPU, RAM, FPS)
+        self.monitor_window = MonitorWindow(title='System Monitor')
+        
+        if self.enable_point_cloud:
+            self.point_cloud_window = PointCloudWindow(title='Point Cloud')
+        
+        # Инициализация робота
+        if self.enable_robot:
+            self.robot_service = RobotService(
+                ip=self.robot_ip if self.robot_ip else None,
+                port=self.robot_port if self.robot_port else None,
+                auto_connect=True
+            )
+            
+            # Перемещаем робота в рабочую позицию при запуске
+            if self.robot_service.is_connected:
+                print("\n" + "-" * 40)
+                print("  Перемещение в рабочую позицию...")
+                print("-" * 40)
+                if self.robot_service.move_to_home():
+                    print("  Робот в рабочей позиции!")
+                    print("-" * 40 + "\n")
+                    
+                    # Запускаем цикл движения влево-вправо
+                    self.robot_service.start_cycle_movement(
+                        on_position_reached=self._on_cycle_position_reached
+                    )
+                else:
+                    print("  Не удалось переместить робота")
+                    print("-" * 40 + "\n")
+        
+        print("\n" + "=" * 60)
+        print("  System initialized successfully!")
+        print("  Press 'q' to exit")
+        print("=" * 60 + "\n")
+        
+        return True
+    
+    def run(self):
+        """Запускает основной цикл обработки."""
+        if not self.camera_service or not self.camera_service.is_running:
+            print("Camera not initialized!")
+            return
+        
+        self._running = True
+        
+        try:
+            while self._running:
+                if not self._process_frame():
+                    break
+        except KeyboardInterrupt:
+            print("\nInterrupted by user")
+        finally:
+            self.shutdown()
+    
+    def _process_frame(self) -> bool:
+        """
+        Обрабатывает один кадр.
+        
+        Чистая 2D детекция (OpenCV) - быстро и стабильно.
+        
+        Returns:
+            True для продолжения, False для выхода
+        """
+        # Получаем кадры
+        depth_frame, color_frame, _ = self.camera_service.get_frames()
+        
+        if depth_frame is None or color_frame is None:
+            return True
+        
+        # Получаем данные
+        color_image = np.asanyarray(color_frame.get_data())
+        intrinsics = self.camera_service.get_intrinsics(color_frame)
+        depth_scale = self.camera_service.get_depth_scale()
+        
+        # Применяем фильтры глубины
+        depth_frame = self.depth_processor.apply_depth_filters(depth_frame)
+        
+        collision, detected_objects, gripper_info, color_image = self._process_frame_2d(
+            color_image=color_image,
+            depth_frame=depth_frame,
+            depth_scale=depth_scale,
+            intrinsics=intrinsics
+        )
+        
+        # === УПРАВЛЕНИЕ РОБОТОМ ПРИ СТОЛКНОВЕНИИ ===
+        if self.robot_service and self.robot_service.is_connected:
+            if collision and not self._last_collision_state:
+                self.robot_service.stop_movement()
+            elif not collision and self._last_collision_state:
+                self.robot_service.resume_movement()
+            self._last_collision_state = collision
+        
+        # Счётчики
+        current_count = len(detected_objects)
+        stable_count = current_count
+        
+        # Обновляем FPS
+        fps = self.fps_counter.update() or self.fps_counter.get_fps()
+        
+        # Получаем системную статистику
+        cpu, memory, threads = sample_system_stats()
+
+        # GPU снимаем раз в 15 кадров (счётчик дороговат)
+        self._frame_idx += 1
+        if self.gpu_sampler.ok and self._frame_idx % 15 == 0:
+            g = self.gpu_sampler.read()
+            if g is not None:
+                self._gpu_val = g
+
+        # Обновляем окно мониторинга
+        if self.monitor_window:
+            self.monitor_window.update(cpu, memory, fps, threads, gpu=self._gpu_val)
+
+        # Пишем строку в CSV для оффлайн-анализа
+        self.perf_logger.log(
+            frame=self._frame_idx,
+            fps=round(fps, 1),
+            cpu_pct=round(cpu, 1),
+            ram_mb=round(memory, 1),
+            gpu_pct=round(self._gpu_val, 1) if self._gpu_val is not None else "",
+            threads=threads,
+            objects=current_count,
+        )
+        
+        # Опциональное окно облака точек (только визуализация, не детекция)
+        if self.enable_point_cloud and self.point_cloud_window and self.depth_processor:
+            try:
+                depth_image = np.asanyarray(depth_frame.get_data())
+                color_image_raw = np.asanyarray(color_frame.get_data())
+                pcd = self.depth_processor.create_point_cloud(
+                    depth_image=depth_image,
+                    color_image=color_image_raw,
+                    intrinsics=intrinsics
+                )
+                self.point_cloud_window.update_point_cloud(pcd)
+            except Exception:
+                pass
+        
+        # Отображаем в окне камеры
+        continues = self.camera_window.display(
+            color_image,
+            depth_frame=depth_frame,
+            depth_scale=depth_scale,
+            stable_count=stable_count,
+            current_count=current_count,
+            stable_frames=self.object_tracker.stable_frames,
+            stable_threshold=STABLE_THRESHOLD,
+            time_to_change=self.object_tracker.get_time_to_change(),
+            cpu_percent=cpu,
+            memory_percent=memory,
+            thread_count=threads,
+            fps=fps,
+            tracks=self.object_tracker.tracks,
+            detections=[],
+            intrinsics=intrinsics,
+            track_persist=TRACK_PERSIST
+        )
+        
+        return continues
+
+    def _process_frame_2d(self, color_image, depth_frame, depth_scale, intrinsics):
+        """Детекция хвата, препятствий, коллизий и отрисовка (RGB + depth)."""
+        # Обработка рабочей области (белый лист)
+        sheet_mask = self.depth_processor.get_effective_mask(color_image)
+        
+        # === 2D ДЕТЕКЦИЯ ХВАТА ===
+        gripper_info = self.gripper_detector.detect(
+            color_image,
+            depth_frame=depth_frame,
+            depth_scale=depth_scale,
+            intrinsics=intrinsics
+        )
+        
+        # Логируем хват
+        self._gripper_log_counter += 1
+        if self._gripper_log_counter >= GRIPPER_LOG_INTERVAL:
+            if gripper_info is not None:
+                self.gripper_detector.log_gripper_info(gripper_info)
+                if self._on_gripper_detected:
+                    self._on_gripper_detected(gripper_info)
+            self._gripper_log_counter = 0
+        
+        # Получаем высоту и bbox хвата
+        gripper_height = None
+        gripper_bbox = None
+        if gripper_info is not None:
+            gripper_height = gripper_info.get('depth_m')
+            gripper_bbox = gripper_info.get('bbox')
+        
+        # === 2D ДЕТЕКЦИЯ ОБЪЕКТОВ ===
+        detected_objects = self.obstacle_detector.detect_objects(
+            color_image,
+            depth_frame=depth_frame,
+            depth_scale=depth_scale,
+            gripper_height=gripper_height,
+            sheet_mask=sheet_mask,
+            gripper_bbox=gripper_bbox
+        )
+        
+        # === ПРОВЕРКА СТОЛКНОВЕНИЙ ===
+        collision, _ = self.gripper_detector.check_collision(
+            gripper_info, detected_objects
+        )
+        
+        # === ОТРИСОВКА ===
+        color_image = self.obstacle_detector.draw_objects(
+            color_image, detected_objects, gripper_height
+        )
+        color_image = self.gripper_detector.draw_gripper(
+            color_image, gripper_info, collision=collision
+        )
+        
+        return collision, detected_objects, gripper_info, color_image
+    
+    def _on_click(self, x_3d: float, y_3d: float, z_3d: float, distance_m: float, robot_z: float):
+        """
+        Обработчик клика - отправляет команду роботу.
+        
+        Args:
+            x_3d: X координата в метрах
+            y_3d: Y координата в метрах
+            z_3d: Z координата в метрах
+            distance_m: Расстояние в метрах
+            robot_z: Z координата для робота в мм
+        """
+        if self.robot_service and self.robot_service.is_connected:
+            # Конвертируем в мм
+            x_mm = x_3d * 1000
+            y_mm = y_3d * 1000
+            distance_mm = distance_m * 1000
+            
+            self.robot_service.move_to_target_async(x_mm, y_mm, distance_mm)
+    
+    def set_gripper_callback(self, callback: Callable):
+        """Устанавливает callback для обнаружения хвата."""
+        self._on_gripper_detected = callback
+    
+    def set_object_callback(self, callback: Callable):
+        """Устанавливает callback для обнаружения объектов."""
+        self._on_object_detected = callback
+    
+    def _on_cycle_position_reached(self, direction: str, position: list):
+        """
+        Callback при достижении позиции в цикле движения.
+        
+        Args:
+            direction: 'left' или 'right'
+            position: Координаты позиции [X, Y, Z, A, B, C]
+        """
+        # Здесь можно добавить логику при достижении позиции
+        # Например: проверка препятствий, захват объекта и т.д.
+        if self._on_cycle_position:
+            self._on_cycle_position(direction, position)
+    
+    def set_cycle_position_callback(self, callback: Callable):
+        """Устанавливает callback для достижения позиции в цикле."""
+        self._on_cycle_position = callback
+    
+    def get_gripper_position(self) -> Optional[dict]:
+        """
+        Получает текущую позицию хвата.
+        
+        Returns:
+            Информация о хвате или None
+        """
+        if self.gripper_detector:
+            return {
+                'position': self.gripper_detector.last_gripper_position,
+                'height': self.gripper_detector.last_gripper_height
+            }
+        return None
+    
+    def get_robot_position(self) -> Optional[tuple]:
+        """
+        Получает текущую позицию робота.
+        
+        Returns:
+            Кортеж (X, Y, Z, A, B, C) или None
+        """
+        if self.robot_service and self.robot_service.is_connected:
+            return self.robot_service.get_current_position()
+        return None
+    
+    def move_robot_home(self) -> bool:
+        """Отправляет робота в домашнюю позицию."""
+        if self.robot_service and self.robot_service.is_connected:
+            return self.robot_service.move_to_home()
+        return False
+    
+    def shutdown(self):
+        """Завершает работу системы."""
+        print("\n" + "=" * 60)
+        print("  Shutting down...")
+        print("=" * 60)
+        
+        self._running = False
+        
+        # Останавливаем цикл движения робота
+        if self.robot_service and self.robot_service.is_cycle_running:
+            self.robot_service.stop_cycle_movement()
+        
+        if self.camera_window:
+            self.camera_window.close()
+        
+        if self.monitor_window:
+            self.monitor_window.close()
+
+        # GPU-сэмплер + сводка/CSV по производительности
+        if self.gpu_sampler:
+            self.gpu_sampler.close()
+        if self.perf_logger:
+            self.perf_logger.close()
+
+        if self.point_cloud_window:
+            self.point_cloud_window.close()
+        
+        if self.camera_service:
+            self.camera_service.stop()
+        
+        if self.robot_service:
+            self.robot_service.disconnect()
+        
+        print("  System stopped.")
+        print("=" * 60 + "\n")
+

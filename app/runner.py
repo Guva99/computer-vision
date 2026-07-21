@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import open3d as o3d
 
+from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
 from pointcloud_pipeline import to_open3d_cloud
 from realsense_io import AppConfig, RealSenseCamera
@@ -33,6 +34,7 @@ class AppRunner:
         # Для скриншотов в статью поставь show_o3d_window=True в AppConfig.
         self.visualizer = CloudVisualizer(cfg)
         self.pipeline = PerceptionPipeline(cfg, self.visualizer)
+        self.perf = PerfMonitor(cfg)
 
     def run(self) -> None:
         cfg = self.cfg
@@ -57,12 +59,17 @@ class AppRunner:
                 frame_count += 1
                 result = self.pipeline.process(frame, frame_count)
 
+                # ── мониторинг ресурсов ПК (CPU/RAM/GPU) ──
+                _t_total = time.perf_counter() - _t0
+                inst_fps = 1.0 / _t_total if _t_total > 0 else 0.0
+                self.perf.sample(frame_count, inst_fps, result.stage_times)
+                self._draw_perf(result.overlay)
+
                 cv2.imshow("RGB", result.overlay)
                 if result.debug_mosaic is not None:
                     cv2.imshow("Debug masks", result.debug_mosaic)
 
                 # ── timing probe: накопить и печатать средние раз в N кадров ──
-                _t_total = time.perf_counter() - _t0
                 st = result.stage_times
                 _t_acc["grab"] += _t_grab
                 _t_acc["cloud"] += st["cloud"]
@@ -101,3 +108,16 @@ class AppRunner:
             self.visualizer.destroy()
             cv2.destroyAllWindows()
             self.pipeline.close()
+            self.perf.close()
+
+    def _draw_perf(self, overlay) -> None:
+        """Нарисовать CPU/RAM/GPU в правом-нижнем углу кадра."""
+        lines = self.perf.overlay_lines()
+        if not lines:
+            return
+        h, w = overlay.shape[:2]
+        y0 = h - 14 * len(lines) - 8
+        cv2.rectangle(overlay, (w - 250, y0 - 4), (w, h), (0, 0, 0), -1)
+        for i, txt in enumerate(lines):
+            cv2.putText(overlay, txt, (w - 244, y0 + 12 + i * 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 0), 1, cv2.LINE_AA)

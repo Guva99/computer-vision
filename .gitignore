@@ -19,3 +19,19 @@ nul
 # Editor
 .vscode/
 .idea/
+
+# Model weights & large binaries
+*.pt
+*.ply
+*.avi
+*.mp4
+
+# Benchmark / analysis artifacts (сгенерированные, в репозиторий не кладём)
+*.png
+cloud_point/iter0/
+cloud_point/iter1/
+cloud_point/iter2/
+cloud_point/iter3/
+cloud_point/local_images/
+cloud_point/benchmark_results_*.csv
+cloud_point/complexity_results.json

@@ -19,7 +19,13 @@ class AppConfig:
     robot_read_timeout_s: float = 0.2    # макс. ожидание ответа $AXIS_ACT (сек); контроллер под нагрузкой отвечает ~60мс
     robot_read_every_n: int = 2          # читать углы раз в N кадров (углы меняются плавно)
     o3d_render_every_n: int = 3          # обновлять тяжёлый 3D-рендер раз в N кадров
-    show_o3d_window: bool = False        # 3D-окно Open3D (~60 мс/кадр). True = для скринов в статью
+    show_o3d_window: bool = True         # 3D-окно Open3D (~60 мс/кадр). True = для скринов в статью
+    # Мониторинг ресурсов ПК (CPU/RAM/GPU) для анализа нагрузки в статье
+    perf_monitor: bool = True            # снимать характеристики и писать CSV
+    perf_overlay: bool = True            # показывать CPU/RAM/GPU на кадре
+    perf_window: bool = True             # отдельное окно с графиками (как в 2D-программе)
+    perf_gpu_every_n: int = 15           # снимать GPU раз в N кадров (счётчик дороговат)
+    perf_log_path: str = "captures/perf_log.csv"
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)
@@ -246,21 +252,28 @@ class RealSenseCamera:
             self.profile = None
 
     def get_aligned_frames(self):
-        frames = self.pipeline.wait_for_frames()
-        # Сбросить очередь до самого нового кадра, чтобы не копилась задержка:
-        # если обработка просела, берём актуальный момент, а не прошлое.
-        while True:
-            newer = self.pipeline.poll_for_frames()
-            if not newer:
-                break
-            frames = newer
-        aligned_frames = self.align_to_color.process(frames)
-        depth_frame = aligned_frames.get_depth_frame()
-        color_frame = aligned_frames.get_color_frame()
-        if not depth_frame or not color_frame:
+        # Транзиентные сбои RealSense (align/USB/тайминг) не должны ронять приложение —
+        # при ошибке возвращаем None, цикл пропустит кадр и попробует снова.
+        try:
+            frames = self.pipeline.wait_for_frames()
+            # Сбросить очередь до самого нового кадра, чтобы не копилась задержка:
+            # если обработка просела, берём актуальный момент, а не прошлое.
+            for _ in range(8):  # ограниченный дренаж (без бесконечного цикла)
+                newer = self.pipeline.poll_for_frames()
+                if not newer:
+                    break
+                frames = newer
+            aligned_frames = self.align_to_color.process(frames)
+            depth_frame = aligned_frames.get_depth_frame()
+            color_frame = aligned_frames.get_color_frame()
+            if not depth_frame or not color_frame:
+                return None
+            color = np.asanyarray(color_frame.get_data())
+            depth = np.asanyarray(depth_frame.get_data())
+            intr = color_frame.profile.as_video_stream_profile().intrinsics
+            intrinsics = {"fx": intr.fx, "fy": intr.fy, "cx": intr.ppx, "cy": intr.ppy}
+            return color, depth, intrinsics, self.depth_scale
+        except RuntimeError as e:
+            # частый случай: "Error occured during execution of the processing block"
+            print(f"[WARN] RealSense frame skipped: {e}")
             return None
-        color = np.asanyarray(color_frame.get_data())
-        depth = np.asanyarray(depth_frame.get_data())
-        intr = color_frame.profile.as_video_stream_profile().intrinsics
-        intrinsics = {"fx": intr.fx, "fy": intr.fy, "cx": intr.ppx, "cy": intr.ppy}
-        return color, depth, intrinsics, self.depth_scale
