@@ -34,6 +34,8 @@ from src.constants.config import (
     ENABLE_DECISION_LOG, DECISION_PERF_LOG_PATH, OBJECTS_CSV_PATH, SCENARIO_ID,
     ENABLE_STOP_LOG, STOP_EVENTS_CSV_PATH, STOP_SPEED_EPS_DEG_S,
     STOP_CONFIRM_FRAMES_STOPPED,
+    ENABLE_RECORDING, RECORDING_PATH, RECORDING_JOINTS_EVERY_N,
+    SOURCE_MODE, PLAYBACK_PATH,
 )
 
 
@@ -63,8 +65,23 @@ class SystemController:
             robot_ip: IP-адрес робота (если отличается от конфига)
             robot_port: Порт робота (если отличается от конфига)
         """
+        # Playback (Задача 3): робот принудительно отключён (безопасность)
+        self._playback = SOURCE_MODE == 'playback'
+        if self._playback and enable_robot:
+            print("[PLAYBACK] enable_robot игнорируется — в режиме "
+                  "воспроизведения робот не управляется")
+            enable_robot = False
         self.enable_robot = enable_robot
         self.enable_point_cloud = enable_point_cloud
+
+        # Рекордер (Задача 3); None при выключенном флаге или в playback
+        self.recorder = None
+        self._rec_last_joints = None
+        if ENABLE_RECORDING and not self._playback:
+            from src.utils.frame_recorder import FrameRecorder
+            self.recorder = FrameRecorder(
+                RECORDING_PATH, contour="2D", scenario_id=SCENARIO_ID
+            )
         
         # Компоненты камеры
         self.camera_service: Optional[CameraService] = None
@@ -125,13 +142,19 @@ class SystemController:
         print("  CLOUD POINT SYSTEM - Initializing...")
         print("=" * 60)
         
-        # Инициализация камеры
-        self.camera_service = CameraService(
-            width=CAMERA_WIDTH,
-            height=CAMERA_HEIGHT,
-            fps=CAMERA_FPS
-        )
-        
+        # Инициализация камеры (live) или источника воспроизведения (Задача 3)
+        if self._playback:
+            from src.features.camera.services.playback_camera_service import (
+                PlaybackCameraService
+            )
+            self.camera_service = PlaybackCameraService(PLAYBACK_PATH)
+        else:
+            self.camera_service = CameraService(
+                width=CAMERA_WIDTH,
+                height=CAMERA_HEIGHT,
+                fps=CAMERA_FPS
+            )
+
         if not self.camera_service.start():
             print("Failed to start camera!")
             return False
@@ -223,6 +246,10 @@ class SystemController:
         depth_frame, color_frame, _ = self.camera_service.get_frames()
 
         if depth_frame is None or color_frame is None:
+            # Конец записи в playback → завершаем цикл
+            if getattr(self.camera_service, 'finished', False):
+                print("[PLAYBACK] Конец записи.")
+                return False
             return True
 
         self._frame_idx += 1
@@ -232,8 +259,24 @@ class SystemController:
         intrinsics = self.camera_service.get_intrinsics(color_frame)
         depth_scale = self.camera_service.get_depth_scale()
 
-        # Применяем фильтры глубины
-        depth_frame = self.depth_processor.apply_depth_filters(depth_frame)
+        # ── запись RGB-D + углов (Задача 3), сырые кадры до фильтров ──
+        if self.recorder is not None:
+            if (self.robot_service and self.robot_service.is_connected
+                    and self._frame_idx % RECORDING_JOINTS_EVERY_N == 1):
+                angles = self.robot_service.get_joint_angles()
+                if angles is not None:
+                    self._rec_last_joints = angles
+            self.recorder.record(
+                self._frame_idx, color_image,
+                np.asanyarray(depth_frame.get_data()),
+                {"fx": intrinsics.fx, "fy": intrinsics.fy,
+                 "cx": intrinsics.ppx, "cy": intrinsics.ppy},
+                depth_scale, self._rec_last_joints, t_capture,
+            )
+
+        # Применяем фильтры глубины (только live: rs-фильтры требуют rs.frame)
+        if not self._playback:
+            depth_frame = self.depth_processor.apply_depth_filters(depth_frame)
 
         (collision, detected_objects, gripper_info, color_image,
          colliding, t_decision) = self._process_frame_2d(
@@ -551,6 +594,9 @@ class SystemController:
 
         if self.stop_tracker is not None:
             self.stop_tracker.close()
+
+        if self.recorder is not None:
+            self.recorder.close()
 
         print("  System stopped.")
         print("=" * 60 + "\n")

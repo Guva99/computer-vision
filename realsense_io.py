@@ -40,6 +40,16 @@ class AppConfig:
     stop_events_csv_path: str = "captures/stop_events.csv"
     stop_speed_eps_deg_s: float = 0.5       # порог «робот стоит» (град/с)
     stop_confirm_frames_stopped: int = 3    # кадров подряд ниже порога
+    # ── Рекордер и оффлайн-реплей (валидация, Задача 3) ──────────────────────
+    # enable_recording: синхронная запись RGB-D + углов A1..A6 + таймстемпов
+    # (формат app/recorder.py: npz по кадрам + joints.csv + meta.json).
+    # source_mode="playback": кадры и углы берутся из записи (playback_path),
+    # управление роботом принудительно отключается (безопасность).
+    enable_recording: bool = False
+    recording_path: str = ""             # ""= авто captures/recordings/rec_<ts>
+    recording_compress: bool = False     # True = npz со сжатием (медленнее)
+    source_mode: str = "live"            # "live" | "playback"
+    playback_path: str = ""              # каталог записи для реплея
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)

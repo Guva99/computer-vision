@@ -43,9 +43,20 @@ class JointAngleReader:
         self.cfg = cfg
         self._robot = None
         self._last_joint_angles: Optional[Tuple[float, ...]] = None
+        self._playback_joints: Optional[dict] = None  # {frame: (A1..A6)} в playback
 
     def connect(self) -> "JointAngleReader":
         cfg = self.cfg
+        # Режим воспроизведения (Задача 3): углы берутся из записи по номеру
+        # кадра, соединение с роботом не открывается.
+        if getattr(cfg, "source_mode", "live") == "playback":
+            from playback_io import load_recorded_joints
+            self._playback_joints = load_recorded_joints(
+                getattr(cfg, "playback_path", "")
+            )
+            print(f"[PLAYBACK] JointAngleReader: {len(self._playback_joints)} "
+                  "кадров с углами из записи")
+            return self
         if ROBOT_AVAILABLE and cfg.use_robot_kinematics:
             print("\n" + "=" * 60)
             print("RAW POINT CLOUD + gripper outline (vision) + robot angles")
@@ -73,6 +84,12 @@ class JointAngleReader:
          • при таймауте/None — переиспользуем последние известные углы
         """
         cfg = self.cfg
+        # Playback: углы записи по номеру кадра (пропуски → последние валидные)
+        if self._playback_joints is not None:
+            angles = self._playback_joints.get(frame_count)
+            if angles is not None:
+                self._last_joint_angles = angles
+            return self._last_joint_angles
         if self._robot and (frame_count % cfg.robot_read_every_n == 0):
             try:
                 raw = self._robot.read("$AXIS_ACT", debug=False)

@@ -15,9 +15,11 @@ import open3d as o3d
 from app.decision_log import ObjectsCsvLogger
 from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
+from app.recorder import FrameRecorder
 from app.stop_log import StopEventTracker, estimate_link_speed_m_s
 from collision import LEVEL_ORDER
 from kuka_fk import fk_joints
+from playback_io import PlaybackCamera
 from pointcloud_pipeline import to_open3d_cloud
 from realsense_io import AppConfig, RealSenseCamera
 from robot.cycle_path import build_home_and_sweep
@@ -35,7 +37,23 @@ def save_full_cloud(output_dir, points, colors):
 class AppRunner:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
-        self.camera = RealSenseCamera(cfg)
+        # Источник кадров (Задача 3): live-камера или воспроизведение записи
+        self._playback = cfg.source_mode == "playback"
+        if self._playback:
+            self.camera = PlaybackCamera(cfg)
+            # Безопасность: в playback управление роботом принудительно выкл.
+            if cfg.enable_robot_control:
+                print("[PLAYBACK] enable_robot_control игнорируется "
+                      "(в режиме воспроизведения робот не управляется)")
+        else:
+            self.camera = RealSenseCamera(cfg)
+        # Рекордер RGB-D + углов (только в live)
+        self.recorder: FrameRecorder | None = None
+        if cfg.enable_recording and not self._playback:
+            self.recorder = FrameRecorder(
+                cfg.recording_path, contour="3D",
+                compress=cfg.recording_compress, scenario_id=cfg.scenario_id,
+            )
         # 3D-окно Open3D отключаемо: cfg.show_o3d_window=False → vis=None (экономит ~60 мс/кадр).
         # Для скриншотов в статью поставь show_o3d_window=True в AppConfig.
         self.visualizer = CloudVisualizer(cfg)
@@ -66,7 +84,7 @@ class AppRunner:
         self._last_danger = False              # edge-trigger состояния коллизии
         self._danger_streak = 0                # дебаунс: подряд идущие DANGER-кадры
         self._stop_level = LEVEL_ORDER.get(cfg.collision_stop_level, 2)
-        if cfg.enable_robot_control:
+        if cfg.enable_robot_control and not self._playback:
             # Точки цикла из записанных joint-поз (FK → декартовы, поза фланца).
             # FK-поза задана в базе робота → управление с BASE=0/TOOL=0.
             print("\n[ROBOT-CTRL] enable_robot_control=True → инициализация управления")
@@ -110,12 +128,23 @@ class AppRunner:
                 _t0 = time.perf_counter()
                 frame = self.camera.get_aligned_frames()
                 if frame is None:
+                    if self._playback:
+                        print("[PLAYBACK] Конец записи.")
+                        break
                     continue
                 _t_grab = time.perf_counter() - _t0
 
                 frame_count += 1
                 # _t0 = t_capture (Задача 1): от него считается latency решения
                 result = self.pipeline.process(frame, frame_count, t_capture=_t0)
+
+                # ── запись RGB-D + углов (Задача 3) ──
+                if self.recorder is not None:
+                    color_raw, depth_raw, intr, dscale = frame
+                    self.recorder.record(
+                        frame_count, color_raw, depth_raw, intr, dscale,
+                        result.joint_angles, _t0,
+                    )
 
                 # ── реакция робота на коллизию (edge-triggered, как в 2D) ──
                 # Дебаунс: стоп только после N подряд DANGER-кадров — одиночные
@@ -247,6 +276,8 @@ class AppRunner:
                 self.objects_log.close()
             if self.stop_tracker is not None:
                 self.stop_tracker.close()
+            if self.recorder is not None:
+                self.recorder.close()
 
     def _draw_perf(self, overlay) -> None:
         """Нарисовать CPU/RAM/GPU в правом-нижнем углу кадра."""
