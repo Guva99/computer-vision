@@ -144,6 +144,22 @@ class AppRunner:
                 # _t0 = t_capture (Задача 1): от него считается latency решения
                 result = self.pipeline.process(frame, frame_count, t_capture=_t0)
 
+                # ── дамп масок для IoU (Задача 6) ──
+                if (cfg.dump_masks_every_n > 0
+                        and frame_count % cfg.dump_masks_every_n == 0):
+                    mask_dir = Path(cfg.masks_dump_dir) / "3d"
+                    mask_dir.mkdir(parents=True, exist_ok=True)
+                    if result.manipulator_mask is not None:
+                        cv2.imwrite(
+                            str(mask_dir / f"frame_{frame_count:06d}_manip.png"),
+                            result.manipulator_mask,
+                        )
+                    if result.scene_objects_mask is not None:
+                        cv2.imwrite(
+                            str(mask_dir / f"frame_{frame_count:06d}_obstacle.png"),
+                            result.scene_objects_mask,
+                        )
+
                 # ── запись RGB-D + углов (Задача 3) ──
                 if self.recorder is not None:
                     color_raw, depth_raw, intr, dscale = frame

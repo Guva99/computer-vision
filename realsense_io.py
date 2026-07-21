@@ -53,6 +53,13 @@ class AppConfig:
     # Автозавершение прогона через N секунд (0 = без лимита) — для
     # сценарного раннера tools/run_scenarios.py (Задача 4).
     max_run_seconds: float = 0.0
+    # ── Дамп бинарных масок для IoU (валидация, Задача 6) ────────────────────
+    # 0 = выключено (по умолчанию, на производительность не влияет);
+    # N>0 = каждый N-й кадр писать маски препятствий и манипулятора в
+    # masks_dump_dir/3d/frame_%06d_{obstacle,manip}.png (имена совместимы
+    # с gt_masks из tools/annotate.py для tools/compute_metrics.py).
+    dump_masks_every_n: int = 0
+    masks_dump_dir: str = "captures/masks"
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)

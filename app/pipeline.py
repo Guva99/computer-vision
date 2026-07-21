@@ -12,6 +12,7 @@ from typing import Optional
 
 import numpy as np
 
+import collision as collision_mod
 from pointcloud_pipeline import build_cloud_arrays
 from realsense_io import AppConfig
 from robot.services.fk_service import FkFrame, FkProjector
@@ -39,6 +40,8 @@ class FrameResult:
     objects: list = field(default_factory=list)  # [{obj_id, part, dist_m, level}, ...]
     joint_angles: Optional[tuple] = None  # углы A1..A6 на этом кадре (для лога останова)
     manipulator_mask: Optional[np.ndarray] = None  # маска руки (для дампа масок, Задача 6)
+    scene_objects_mask: Optional[np.ndarray] = None  # маска подтверждённых объектов
+    # (строится только на кадрах дампа: dump_masks_every_n > 0)
 
 
 class PerceptionPipeline:
@@ -118,6 +121,15 @@ class PerceptionPipeline:
         _ck_scene = t_decision
         st["scene"] = _ck_scene - _ck_masks
 
+        # Маска подтверждённых объектов — только на кадрах дампа (Задача 6);
+        # при dump_masks_every_n=0 не строится и на производительность не влияет.
+        scene_objects_mask = None
+        _dump_n = int(getattr(cfg, "dump_masks_every_n", 0))
+        if _dump_n > 0 and frame_count % _dump_n == 0:
+            scene_objects_mask = collision_mod.build_scene_objects_image_mask(
+                cf.scene_objects, intrinsics, color_bgr.shape[:2]
+            )
+
         # ── stage: draw (детекция хвата/запястья + рисование) ──
         gripper_contour = self.gripper_wrist.detect_gripper(
             fkf, masks, color_bgr, depth, depth_scale
@@ -172,4 +184,5 @@ class PerceptionPipeline:
             ],
             joint_angles=joint_angles,
             manipulator_mask=masks.manipulator,
+            scene_objects_mask=scene_objects_mask,
         )

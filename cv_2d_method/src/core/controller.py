@@ -36,6 +36,7 @@ from src.constants.config import (
     STOP_CONFIRM_FRAMES_STOPPED,
     ENABLE_RECORDING, RECORDING_PATH, RECORDING_JOINTS_EVERY_N,
     SOURCE_MODE, PLAYBACK_PATH, MAX_RUN_SECONDS,
+    DUMP_MASKS_EVERY_N, MASKS_DUMP_DIR,
 )
 
 
@@ -345,6 +346,10 @@ class SystemController:
         if self.monitor_window:
             self.monitor_window.update(cpu, memory, fps, threads)
 
+        # ── дамп масок для IoU (Задача 6) ──
+        if DUMP_MASKS_EVERY_N > 0 and self._frame_idx % DUMP_MASKS_EVERY_N == 0:
+            self._dump_masks(color_image.shape[:2], detected_objects, gripper_info)
+
         # ── Покадровый лог решений (Задача 1) ──
         if self.perf_logger is not None:
             robot_paused = bool(
@@ -478,6 +483,33 @@ class SystemController:
 
         return collision, detected_objects, gripper_info, color_image, colliding, t_decision
     
+    def _dump_masks(self, shape, detected_objects, gripper_info):
+        """Бинарные маски препятствий и хвата для IoU (Задача 6).
+
+        Имена совместимы с gt_masks инструмента разметки:
+        <MASKS_DUMP_DIR>/2d/frame_%06d_{obstacle,manip}.png.
+        """
+        import cv2
+        from pathlib import Path
+        mask_dir = Path(MASKS_DUMP_DIR) / "2d"
+        mask_dir.mkdir(parents=True, exist_ok=True)
+        obstacle = np.zeros(shape, dtype=np.uint8)
+        for obj in detected_objects:
+            if obj.get('contour') is not None:
+                cv2.drawContours(obstacle, [obj['contour']], -1, 255, -1)
+        manip = np.zeros(shape, dtype=np.uint8)
+        if gripper_info is not None:
+            for part in gripper_info.get('parts', []):
+                if part.get('contour') is not None:
+                    cv2.drawContours(manip, [part['contour']], -1, 255, -1)
+            if not gripper_info.get('parts') and gripper_info.get('bbox'):
+                x, y, w, h = gripper_info['bbox']
+                cv2.rectangle(manip, (x, y), (x + w, y + h), 255, -1)
+        cv2.imwrite(str(mask_dir / f"frame_{self._frame_idx:06d}_obstacle.png"),
+                    obstacle)
+        cv2.imwrite(str(mask_dir / f"frame_{self._frame_idx:06d}_manip.png"),
+                    manip)
+
     def _estimate_gripper_speed(self, gripper_info, t_now) -> Optional[float]:
         """Модуль линейной скорости хвата (м/с) по разнице 3D-позиций между
         кадрами — для оценки минимальной безопасной дистанции (Задача 2)."""
