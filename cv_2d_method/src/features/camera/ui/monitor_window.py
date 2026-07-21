@@ -28,12 +28,11 @@ class MonitorWindow:
         self.cpu_history = deque(maxlen=history_size)
         self.ram_history = deque(maxlen=history_size)
         self.fps_history = deque(maxlen=history_size)
-        self.gpu_history = deque(maxlen=history_size)
-
-        # Размеры окна (выше — добавлен 4-й график GPU)
+        
+        # Размеры окна
         self.width = 420
-        self.height = 475
-
+        self.height = 380
+        
         # Цвета
         self.bg_color = (30, 30, 30)
         self.grid_color = (60, 60, 60)
@@ -41,9 +40,8 @@ class MonitorWindow:
         self.cpu_color = (0, 255, 0)      # Зелёный
         self.ram_color = (0, 165, 255)    # Оранжевый
         self.fps_color = (0, 255, 255)    # Жёлтый
-        self.gpu_color = (255, 0, 255)    # Фиолетовый
-
-    def update(self, cpu: float, ram: float, fps: float, threads: int = 0, gpu: float = None):
+    
+    def update(self, cpu: float, ram: float, fps: float, threads: int = 0):
         """
         Обновляет данные и перерисовывает окно.
         
@@ -57,7 +55,6 @@ class MonitorWindow:
         self.cpu_history.append(cpu)
         self.ram_history.append(ram)
         self.fps_history.append(fps)
-        self.gpu_history.append(gpu if gpu is not None else 0.0)
         
         # Создаём изображение
         img = np.full((self.height, self.width, 3), self.bg_color, dtype=np.uint8)
@@ -105,16 +102,7 @@ class MonitorWindow:
             margin_left, y_pos, graph_width, graph_height,
             f"FPS: {fps:.1f}", self.fps_color, max_fps
         )
-
-        # === ГРАФИК GPU ===
-        y_pos += graph_spacing
-        gpu_label = f"GPU: {gpu:.1f}%" if gpu is not None else "GPU: n/a"
-        self._draw_graph(
-            img, list(self.gpu_history),
-            margin_left, y_pos, graph_width, graph_height,
-            gpu_label, self.gpu_color, 100.0
-        )
-
+        
         # === ИНФОРМАЦИОННАЯ ПАНЕЛЬ ===
         y_pos += graph_spacing + 10
         cv2.line(img, (10, y_pos - 5), (self.width - 10, y_pos - 5), self.grid_color, 1)

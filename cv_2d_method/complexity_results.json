@@ -1,0 +1,37 @@
+{
+  "hardware": {
+    "name": "Текущий ПК",
+    "cores": 4,
+    "threads": 8,
+    "ram_gb": 15.698925018310547,
+    "freq_ghz": 2.419,
+    "gflops": 619.264
+  },
+  "note": "ВСЕ ДАННЫЕ СИНТЕТИЧЕСКИЕ. Реальные кадры НЕ используются.",
+  "results": {
+    "A": {
+      "name": "Brute Force",
+      "flops": 2485223424000.0,
+      "t_calc_ms": 6688.648201736255,
+      "t_cap_fps": 0.14950704086072544,
+      "memory_mb": 9.3316650390625,
+      "is_realtime": false
+    },
+    "B": {
+      "name": "Local Search",
+      "flops": 1733990400.0,
+      "t_calc_ms": 4.666804464654817,
+      "t_cap_fps": 90.0,
+      "memory_mb": 12.4371337890625,
+      "is_realtime": true
+    },
+    "C": {
+      "name": "Coarse-to-Fine",
+      "flops": 2205413567.4493093,
+      "t_calc_ms": 5.93557719984075,
+      "t_cap_fps": 90.0,
+      "memory_mb": 12.4371337890625,
+      "is_realtime": "True"
+    }
+  }
+}

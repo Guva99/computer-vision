@@ -1,0 +1,8 @@
+platform: Windows
+platform_release: 10
+processor: Intel64 Family 6 Model 140 Stepping 1, GenuineIntel
+python_version: 3.9.0
+cpu_count: 8
+numpy_version: 2.0.2
+scipy_version: 1.13.1
+sklearn_version: 1.6.1

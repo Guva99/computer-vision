@@ -29,6 +29,7 @@ class FrameResult:
     debug_mosaic: Optional[np.ndarray]
     points: np.ndarray
     colors: np.ndarray
+    collision_level: str = "SAFE"  # SAFE/WARN/DANGER — сигнал для остановки робота
     stage_times: dict = field(default_factory=dict)
 
 
@@ -146,5 +147,6 @@ class PerceptionPipeline:
             debug_mosaic=debug_mosaic,
             points=points,
             colors=colors,
+            collision_level=cf.worst_level,
             stage_times=st,
         )

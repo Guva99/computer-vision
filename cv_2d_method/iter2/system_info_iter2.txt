@@ -1,0 +1,11 @@
+platform: Windows
+platform_release: 10
+processor: Intel64 Family 6 Model 140 Stepping 1, GenuineIntel
+python_version: 3.9.0
+cpu_count_total: 8
+threads_iter0: 8
+threads_iter1: 4
+threads_iter2: 2
+numpy_version: 2.0.2
+scipy_version: 1.13.1
+threadpool_info: [{'user_api': 'blas', 'internal_api': 'openblas', 'num_threads': 2, 'prefix': 'libscipy_openblas', 'filepath': 'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python39\\Lib\\site-packages\\numpy.libs\\libscipy_openblas64_-caad452230ae4ddb57899b8b3a33c55c.dll', 'version': '0.3.27', 'threading_layer': 'pthreads', 'architecture': 'SkylakeX'}, {'user_api': 'blas', 'internal_api': 'openblas', 'num_threads': 2, 'prefix': 'libopenblas', 'filepath': 'C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python39\\Lib\\site-packages\\scipy.libs\\libopenblas_v0.3.27--3aa239bc726cfb0bd8e5330d8d4c15c6.dll', 'version': '0.3.27', 'threading_layer': 'pthreads', 'architecture': 'SkylakeX'}]

@@ -14,8 +14,11 @@ import open3d as o3d
 
 from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
+from collision import LEVEL_ORDER
 from pointcloud_pipeline import to_open3d_cloud
 from realsense_io import AppConfig, RealSenseCamera
+from robot.cycle_path import build_home_and_sweep
+from robot.services.robot_service import RobotService
 from vision.visualizer import CloudVisualizer
 
 
@@ -35,6 +38,39 @@ class AppRunner:
         self.visualizer = CloudVisualizer(cfg)
         self.pipeline = PerceptionPipeline(cfg, self.visualizer)
         self.perf = PerfMonitor(cfg)
+
+        # ── Управление роботом: цикл движения + остановка по коллизии ──
+        # Отдельное соединение с контроллером (JointAngleReader держит своё на чтение).
+        self.robot: RobotService | None = None
+        self._last_danger = False              # edge-trigger состояния коллизии
+        self._danger_streak = 0                # дебаунс: подряд идущие DANGER-кадры
+        self._stop_level = LEVEL_ORDER.get(cfg.collision_stop_level, 2)
+        if cfg.enable_robot_control:
+            # Точки цикла из записанных joint-поз (FK → декартовы, поза фланца).
+            # FK-поза задана в базе робота → управление с BASE=0/TOOL=0.
+            print("\n[ROBOT-CTRL] enable_robot_control=True → инициализация управления")
+            home_cart, sweep_cart = build_home_and_sweep()
+            print(f"[ROBOT-CTRL] home={[round(v, 1) for v in home_cart]}  waypoints={len(sweep_cart)}")
+            self.robot = RobotService(
+                ip=cfg.robot_ip,
+                port=cfg.robot_port,
+                speed=cfg.robot_ctrl_speed,
+                base=0,
+                tool=0,
+                home_position=home_cart,
+                cycle_waypoints=sweep_cart,
+                auto_connect=True,
+            )
+            if self.robot.is_connected:
+                print("[ROBOT-CTRL] connected → move_to_home()")
+                if self.robot.move_to_home():
+                    print("[ROBOT-CTRL] home OK → start_cycle_movement()")
+                    self.robot.start_cycle_movement()
+                else:
+                    print("[ROBOT-CTRL] move_to_home() FAILED — цикл не запущен")
+            else:
+                print("[ROBOT-CTRL] NOT connected (проверь robot_ip/порт/питание) — движения не будет")
+                self.robot = None
 
     def run(self) -> None:
         cfg = self.cfg
@@ -58,6 +94,19 @@ class AppRunner:
 
                 frame_count += 1
                 result = self.pipeline.process(frame, frame_count)
+
+                # ── реакция робота на коллизию (edge-triggered, как в 2D) ──
+                # Дебаунс: стоп только после N подряд DANGER-кадров — одиночные
+                # выбросы детекции не дёргают робота. Resume — сразу (без счёта).
+                if self.robot is not None and self.robot.is_connected:
+                    danger_now = LEVEL_ORDER.get(result.collision_level, 0) >= self._stop_level
+                    self._danger_streak = self._danger_streak + 1 if danger_now else 0
+                    danger = self._danger_streak >= cfg.collision_stop_confirm_frames
+                    if danger and not self._last_danger:
+                        self.robot.stop_movement()
+                    elif not danger and self._last_danger:
+                        self.robot.resume_movement()
+                    self._last_danger = danger
 
                 # ── мониторинг ресурсов ПК (CPU/RAM/GPU) ──
                 _t_total = time.perf_counter() - _t0
@@ -104,6 +153,9 @@ class AppRunner:
                     path = save_full_cloud(cfg.output_dir, result.points, result.colors)
                     print(f"Saved: {path}")
         finally:
+            if self.robot is not None:
+                self.robot.stop_cycle_movement()
+                self.robot.disconnect()
             self.camera.stop()
             self.visualizer.destroy()
             cv2.destroyAllWindows()

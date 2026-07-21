@@ -28,19 +28,38 @@ class RobotService:
         self,
         ip: Optional[str] = None,
         port: Optional[int] = None,
-        auto_connect: bool = False
+        auto_connect: bool = False,
+        speed: Optional[int] = None,
+        base: Optional[int] = None,
+        tool: Optional[int] = None,
+        home_position: Optional[list] = None,
+        cycle_left: Optional[list] = None,
+        cycle_right: Optional[list] = None,
+        cycle_waypoints: Optional[list] = None,
     ):
         """
         Инициализация сервиса робота.
-        
+
         Args:
             ip: IP-адрес робота (по умолчанию из конфига)
             port: Порт робота (по умолчанию из конфига)
             auto_connect: Автоматически подключаться при создании
+            speed: % override скорости (движение/resume)
+            base/tool: номера BASE/TOOL KUKA
+            home_position/cycle_left/cycle_right: [X,Y,Z,A,B,C] точки
         """
         self.ip = ip if ip else ROBOT_IP
         self.port = port if port else ROBOT_PORT
-        
+        # Параметры движения: из аргументов или дефолты модуля
+        self.speed = speed if speed is not None else ROBOT_SPEED
+        self.base = base if base is not None else ROBOT_BASE
+        self.tool = tool if tool is not None else ROBOT_TOOL
+        self.home_position = list(home_position) if home_position is not None else list(ROBOT_HOME_POSITION)
+        self.cycle_left = list(cycle_left) if cycle_left is not None else list(ROBOT_CYCLE_LEFT)
+        self.cycle_right = list(cycle_right) if cycle_right is not None else list(ROBOT_CYCLE_RIGHT)
+        # Список точек для ping-pong-свипа (приоритетнее left/right). Каждая — [X,Y,Z,A,B,C].
+        self.cycle_waypoints = [list(wp) for wp in cycle_waypoints] if cycle_waypoints else None
+
         self._connection: Optional[OpenShowVar] = None
         self._driver: Optional[KukaDriver] = None
         self._connected: bool = False
@@ -75,12 +94,12 @@ class RobotService:
                 raise ConnectionError("Cannot connect to robot")
             
             self._driver = KukaDriver(self._connection)
-            self._driver.set_base(ROBOT_BASE)
-            self._driver.set_tool(ROBOT_TOOL)
-            self._driver.set_speed(ROBOT_SPEED)
-            
+            self._driver.set_base(self.base)
+            self._driver.set_tool(self.tool)
+            self._driver.set_speed(self.speed)
+
             print(f"Robot connected: {self._driver.name}")
-            print(f"Base: {ROBOT_BASE}, Tool: {ROBOT_TOOL}, Speed: {ROBOT_SPEED}%")
+            print(f"Base: {self.base}, Tool: {self.tool}, Speed: {self.speed}%")
             print(f"{'=' * 60}\n")
             
             self._connected = True
@@ -186,7 +205,7 @@ class RobotService:
             
             trajectory = np.array([
                 np.array(list(current_pos)),
-                np.array(ROBOT_HOME_POSITION)
+                np.array(self.home_position)
             ])
             
             self._driver.ptp_continuous(trajectory)
@@ -303,56 +322,81 @@ class RobotService:
         self._cycle_stop_event.clear()
         self._paused = False
         
+        # Режим свипа по списку точек (ping-pong) — приоритетнее left/right.
+        waypoints = self.cycle_waypoints
+        use_sweep = bool(waypoints) and len(waypoints) >= 2
+
         def cycle_loop():
             print("\n[CYCLE] Starting cycle movement...")
-            direction = 'right'  # Начинаем с движения вправо
-            
+            # Индекс/направление для ping-pong по waypoints
+            idx = 0
+            step = 1
+            direction = 'right'  # для режима left/right
+
             while not self._cycle_stop_event.is_set():
                 # Проверяем паузу
                 with self._pause_lock:
                     if self._paused:
                         time.sleep(0.1)
                         continue
-                
+
                 try:
-                    # Выбираем целевую позицию
-                    if direction == 'right':
-                        target = ROBOT_CYCLE_RIGHT
+                    if use_sweep:
+                        # Следующая точка ping-pong
+                        idx += step
+                        if idx >= len(waypoints):
+                            idx, step = len(waypoints) - 2, -1
+                        elif idx < 0:
+                            idx, step = 1, 1
+                        target = waypoints[idx]
+                        label = f"wp[{idx}]"
                     else:
-                        target = ROBOT_CYCLE_LEFT
-                    
-                    print(f"[CYCLE] Moving {direction}: X={target[0]:.1f}, Y={target[1]:.1f}")
-                    
+                        target = self.cycle_right if direction == 'right' else self.cycle_left
+                        label = direction
+
+                    print(f"[CYCLE] Moving {label}: X={target[0]:.1f}, Y={target[1]:.1f}")
+
                     # Устанавливаем скорость перед движением
-                    self._driver.set_speed(ROBOT_SPEED)
-                    
+                    self._driver.set_speed(self.speed)
+
                     # Выполняем движение
                     current_pos = self.get_current_position()
                     if current_pos is None:
                         time.sleep(0.5)
                         continue
-                    
+
                     trajectory = np.array([
                         np.array(list(current_pos)),
                         np.array(target)
                     ])
-                    
+
                     self._driver.ptp_continuous(trajectory)
-                    
+
+                    # Ждём завершения хода: COM_CASEVAR → 0 означает, что KRL
+                    # выполнил PTP и робот достиг точки. Проверяем каждые 50 мс,
+                    # уважаем паузу и сигнал остановки.
+                    time.sleep(0.15)  # дать KRL подхватить команду
+                    while not self._cycle_stop_event.is_set():
+                        with self._pause_lock:
+                            if self._paused:
+                                time.sleep(0.1)
+                                continue
+                        r = self._connection.read("COM_CASEVAR", False)
+                        if r is None or int(r.decode()) == 0:
+                            break
+                        time.sleep(0.05)
+
                     # Callback при достижении позиции
                     if on_position_reached:
-                        on_position_reached(direction, target)
-                    
-                    # Меняем направление
-                    direction = 'left' if direction == 'right' else 'right'
-                    
-                    # Пауза между движениями
-                    time.sleep(0.5)
-                    
+                        on_position_reached(label, target)
+
+                    if not use_sweep:
+                        direction = 'left' if direction == 'right' else 'right'
+
                 except Exception as e:
                     print(f"[CYCLE] Error: {e}")
                     time.sleep(1.0)
-            
+
             print("[CYCLE] Cycle stopped.")
         
         self._cycle_thread = Thread(target=cycle_loop, daemon=True)
@@ -390,10 +434,10 @@ class RobotService:
         """Возобновляет движение робота."""
         if self._driver and self._connection:
             try:
-                self._connection.write("$OV_PRO", str(ROBOT_SPEED))
+                self._connection.write("$OV_PRO", str(self.speed))
                 with self._pause_lock:
                     self._paused = False
-                print(f"[ROBOT] Movement RESUMED (speed={ROBOT_SPEED})")
+                print(f"[ROBOT] Movement RESUMED (speed={self.speed})")
             except Exception as e:
                 print(f"[ROBOT] Error resuming: {e}")
     

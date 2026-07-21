@@ -19,7 +19,7 @@ class AppConfig:
     robot_read_timeout_s: float = 0.2    # макс. ожидание ответа $AXIS_ACT (сек); контроллер под нагрузкой отвечает ~60мс
     robot_read_every_n: int = 2          # читать углы раз в N кадров (углы меняются плавно)
     o3d_render_every_n: int = 3          # обновлять тяжёлый 3D-рендер раз в N кадров
-    show_o3d_window: bool = True         # 3D-окно Open3D (~60 мс/кадр). True = для скринов в статью
+    show_o3d_window: bool = False        # 3D-окно Open3D (~60 мс/кадр). True = для скринов в статью
     # Мониторинг ресурсов ПК (CPU/RAM/GPU) для анализа нагрузки в статье
     perf_monitor: bool = True            # снимать характеристики и писать CSV
     perf_overlay: bool = True            # показывать CPU/RAM/GPU на кадре
@@ -177,12 +177,22 @@ class AppConfig:
     collision_object_min_points: int = 30
     collision_object_max_extent_m: float = 0.8
     collision_warn_dist_m: float = 0.12
-    collision_danger_dist_m: float = 0.05
+    # DANGER: порог поднят 0.05→0.08 — конвейер систематически завышает дистанцию
+    # (эрозии масок + перцентиль), плюс нужен запас на реакцию KUKA.
+    collision_danger_dist_m: float = 0.08
+    # Гистерезис DANGER: войдя в DANGER, остаёмся в нём пока d <= exit-порога.
+    # Раньше срабатывает, не дребезжит на границе.
+    collision_danger_exit_dist_m: float = 0.10
     # Фильтр временной устойчивости: объект засчитывается только если виден
     # >=N кадров подряд примерно в одном месте. Мигающие протечки руки (шум
     # глубины на белом пластике) скачут по кадру → отсекаются; кубик стабилен.
-    collision_persist_frames: int = 3      # сколько кадров подряд нужно подтверждение
-    collision_track_match_m: float = 0.05  # порог сопоставления объекта между кадрами (м)
+    collision_persist_frames: int = 8      # сколько кадров подряд нужно подтверждение
+    # Fast-path: кандидат, уже находящийся в WARN-зоне руки, подтверждается за
+    # 2 кадра — ложный WARN дешевле пропущенного DANGER при быстром сближении.
+    collision_persist_frames_near: int = 2
+    # 0.05→0.10: при частичном перекрытии объекта рукой центроид сдвигается;
+    # малый порог рвал трек ровно в момент сближения → объект «исчезал» на 8 кадров.
+    collision_track_match_m: float = 0.10  # порог сопоставления объекта между кадрами (м)
     collision_track_max_miss: int = 3      # удалять трек после N пропусков
     collision_focus_parts: tuple = ("gripper", "wrist", "arm")
     # Hybrid collision: body distance from manipulator-mask cloud (measured),
@@ -199,7 +209,8 @@ class AppConfig:
     collision_use_2d_detection: bool = True
     collision_obj_min_area_px: int = 150
     collision_obj_max_area_frac: float = 0.25
-    collision_obj_exclude_border_px: int = 10
+    # 10→25: объекты, прилипшие к кромке кадра (профиль ограждения), отсекаются
+    collision_obj_exclude_border_px: int = 25
     collision_obj_drop_border: bool = True
     collision_obj_min_points_3d: int = 15
     collision_obj_open_px: int = 3
@@ -211,11 +222,16 @@ class AppConfig:
     # чтобы белые края/детали самой руки не считались «чужим объектом» вплотную.
     # ВАЖНО: большое значение «съедает» кубик при подходе руки → контакт не доходит
     # до 0 → нет DANGER. Держим маленьким (только тонкий край смешанных пикселей).
-    collision_obj_manip_exclude_dilate_px: int = 6
+    collision_obj_manip_exclude_dilate_px: int = 28
+    # Reclaim: зона исключения нужна только для ДЕТЕКЦИИ (не считать ореол руки
+    # объектом). Для ДИСТАНЦИИ возвращаем компоненту её пиксели, съеденные зоной
+    # исключения (дилатация компоненты ∩ маска без исключения) — иначе измеренное
+    # расстояние завышается на ширину зоны и DANGER не наступает вовремя.
+    collision_obj_reclaim_near_arm: bool = True
     # Цветовой фильтр объектов: брать только контрастные пятна (светлые ИЛИ
     # насыщенные по цвету), тёмный десатурированный стол отсекается.
     collision_obj_color_gate: bool = True
-    collision_obj_bright_min: int = 150   # белые объекты (светлее стола)
+    collision_obj_bright_min: int = 200   # белые объекты (светлее стола)
     collision_obj_sat_min: int = 60       # цветные объекты (HSV saturation)
     # Исключить синий оттенок (пневмошланг робота) из насыщенной ветки фильтра.
     collision_obj_exclude_blue: bool = True
@@ -225,8 +241,42 @@ class AppConfig:
     collision_obj_consolidate_px: int = 11
     collision_obj_min_fill_ratio: float = 0.32  # area / bbox_area
     collision_obj_max_aspect: float = 4.5       # max(w,h)/min(w,h)
+    # ── Workspace-фильтр: игнорировать объекты вне рабочей зоны ──────────────
+    # Границы в БАЗЕ РОБОТА (м), замерены measure_workspace.py по 4 углам стола
+    # (2026-07-21, TCP на уровне стола, запас ±3 см). Убирает ложные объекты на
+    # профиле ограждения/стенках. Z-верх поднят до ~35 см над столом.
+    # Калибровка T_cr слабая (RMS 27 px, 6 инлайеров) — перевод камера→база
+    # может ошибаться на 5-10 см. Бокс шире замера везде, КРОМЕ стороны профиля
+    # (x_lo): там граница тонкая, иначе фильтр перестаёт резать профиль.
+    # По console-выводу [WS DBG] (координаты отброшенных объектов) бокс можно
+    # подстроить точнее.
+    collision_workspace_filter: bool = True
+    collision_workspace_x_m: tuple = (-0.45, 0.52)
+    collision_workspace_y_m: tuple = (-0.03, 0.60)
+    collision_workspace_z_m: tuple = (-0.05, 0.50)
+    # ── Анти-протечка маски руки ──────────────────────────────────────────────
+    # Кандидат, прилипший к маске руки И совпадающий с ней по глубине (±delta),
+    # — это пиксели самой руки/шланга/тени, а не объект: трек не создаётся.
+    # Реальный объект на столе глубже руки, пока она не опустилась к нему.
+    collision_obj_arm_depth_reject: bool = True
+    collision_obj_arm_depth_delta_m: float = 0.03
+    # Дебаунс остановки: стоп робота после N подряд DANGER-кадров.
+    # Одиночные выбросы (1-2 кадра) больше не дёргают робота (~0.2 с при 15 FPS).
+    collision_stop_confirm_frames: int = 3
+    # ── Управление роботом: цикл движения + стоп по коллизии ──────────────────
+    # Отдельно от use_robot_kinematics (то — только ЧТЕНИЕ углов $AXIS_ACT).
+    # Здесь — ЗАПИСЬ движений (ptp) и мягкая остановка через $OV_PRO.
+    enable_robot_control: bool = True        # True = гонять цикл + тормозить по коллизии
+    # Уровень коллизии, при котором тормозим (SAFE/WARN/DANGER). DANGER = только вплотную.
+    collision_stop_level: str = "DANGER"
+    robot_ctrl_speed: int = 30               # % override для движения (и resume)
+    robot_home_position: tuple = (450, 0, 600, 180, 0, 180)
+    robot_cycle_left: tuple = (350, 200, 600, 180, 0, 180)
+    robot_cycle_right: tuple = (350, -200, 600, 180, 0, 180)
+    robot_base: int = 1
+    robot_tool: int = 1
     # Debug
-    show_debug_masks: bool = True  # нажмите d в окне для toggle или выставьте True здесь
+    show_debug_masks: bool = False  # нажмите d в окне для toggle или выставьте True здесь
 
 
 class RealSenseCamera:

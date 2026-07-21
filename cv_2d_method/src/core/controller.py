@@ -21,7 +21,7 @@ from src.features.camera.ui.camera_window import CameraWindow
 from src.features.camera.ui.point_cloud_window import PointCloudWindow
 from src.features.camera.ui.monitor_window import MonitorWindow
 from src.features.robot.services.robot_service import RobotService
-from src.utils.system_monitor import sample_system_stats, FPSCounter, GpuSampler, PerfLogger
+from src.utils.system_monitor import sample_system_stats, FPSCounter
 from src.constants.config import (
     CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS,
     STABLE_THRESHOLD, TRACK_PERSIST, GRIPPER_LOG_INTERVAL
@@ -74,11 +74,7 @@ class SystemController:
         
         # Мониторинг
         self.fps_counter = FPSCounter()
-        self.gpu_sampler = GpuSampler()      # загрузка видеокарты (win32pdh)
-        self.perf_logger = PerfLogger()      # CSV-лог + сводка
-        self._gpu_val = None                 # последнее значение GPU (снимаем раз в N кадров)
-        self._frame_idx = 0
-
+        
         # Состояние
         self._running = False
         self._gripper_log_counter = 0
@@ -231,28 +227,10 @@ class SystemController:
         
         # Получаем системную статистику
         cpu, memory, threads = sample_system_stats()
-
-        # GPU снимаем раз в 15 кадров (счётчик дороговат)
-        self._frame_idx += 1
-        if self.gpu_sampler.ok and self._frame_idx % 15 == 0:
-            g = self.gpu_sampler.read()
-            if g is not None:
-                self._gpu_val = g
-
+        
         # Обновляем окно мониторинга
         if self.monitor_window:
-            self.monitor_window.update(cpu, memory, fps, threads, gpu=self._gpu_val)
-
-        # Пишем строку в CSV для оффлайн-анализа
-        self.perf_logger.log(
-            frame=self._frame_idx,
-            fps=round(fps, 1),
-            cpu_pct=round(cpu, 1),
-            ram_mb=round(memory, 1),
-            gpu_pct=round(self._gpu_val, 1) if self._gpu_val is not None else "",
-            threads=threads,
-            objects=current_count,
-        )
+            self.monitor_window.update(cpu, memory, fps, threads)
         
         # Опциональное окно облака точек (только визуализация, не детекция)
         if self.enable_point_cloud and self.point_cloud_window and self.depth_processor:
@@ -436,13 +414,7 @@ class SystemController:
         
         if self.monitor_window:
             self.monitor_window.close()
-
-        # GPU-сэмплер + сводка/CSV по производительности
-        if self.gpu_sampler:
-            self.gpu_sampler.close()
-        if self.perf_logger:
-            self.perf_logger.close()
-
+        
         if self.point_cloud_window:
             self.point_cloud_window.close()
         

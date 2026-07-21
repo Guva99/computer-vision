@@ -36,6 +36,10 @@ class SceneObject:
     centroid: np.ndarray
     aabb_min: np.ndarray
     aabb_max: np.ndarray
+    # Признаки протечки маски руки (заполняются в detect_scene_objects_2d):
+    # блоб прилип к маске руки + разница его глубины с локальной глубиной руки.
+    touches_arm: bool = False
+    arm_depth_delta_m: float = float("inf")
 
 
 @dataclass
@@ -355,6 +359,7 @@ def detect_scene_objects_2d(
     obj_mask = valid_2d & (manip_excl == 0)
 
     # Colour/brightness gate: keep only contrasting objects, drop the dark table.
+    contrast: Optional[np.ndarray] = None
     if (
         color_bgr is not None
         and bool(getattr(cfg, "collision_obj_color_gate", True))
@@ -374,6 +379,17 @@ def detect_scene_objects_2d(
             colored = colored & (~is_blue)
         contrast = (gray >= bright_min) | colored
         obj_mask = obj_mask & contrast
+
+    # Reclaim-база: те же фильтры, но вычитается ТОЛЬКО сырая маска руки (без
+    # дилатации). Зона исключения нужна лишь для детекции (ореол руки ≠ объект);
+    # для измерения дистанции найденной компоненте возвращаются её пиксели,
+    # съеденные зоной, — иначе расстояние завышено на ширину зоны (~3 см) и
+    # DANGER не наступает при подходе руки.
+    reclaim_base: Optional[np.ndarray] = None
+    if bool(getattr(cfg, "collision_obj_reclaim_near_arm", True)) and ex_px > 0:
+        reclaim_base = valid_2d & (manipulator_mask == 0)
+        if contrast is not None:
+            reclaim_base = reclaim_base & contrast
 
     obj_mask_u8 = (obj_mask.astype(np.uint8) * 255)
 
@@ -420,6 +436,14 @@ def detect_scene_objects_2d(
     min_fill = float(getattr(cfg, "collision_obj_min_fill_ratio", 0.32))
     max_aspect = float(getattr(cfg, "collision_obj_max_aspect", 4.5))
 
+    # Карта глубины по пикселям (NaN вне valid) — для признаков протечки руки:
+    # сравнение глубины блоба с локальной глубиной руки рядом с ним.
+    z_img: Optional[np.ndarray] = None
+    if bool(getattr(cfg, "collision_obj_arm_depth_reject", True)):
+        z_flat = np.full(h * w, np.nan, dtype=np.float64)
+        z_flat[valid_flat] = points[:, 2]
+        z_img = z_flat.reshape(h, w)
+
     objects: List[SceneObject] = []
     obj_id = 0
     n_kept = 0
@@ -447,6 +471,16 @@ def detect_scene_objects_2d(
                 continue
 
         comp = labels == lab
+        # Reclaim: вернуть компоненте пиксели, съеденные зоной исключения руки
+        # (дилатация компоненты на ex_px ∩ reclaim-база). Форма/площадь выше
+        # проверялись по усечённой компоненте, а 3D-точки для дистанции берём
+        # из полной — ближайший к руке край объекта снова участвует в метрике.
+        if reclaim_base is not None:
+            k_rc = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * ex_px + 1, 2 * ex_px + 1)
+            )
+            comp_dil = cv2.dilate(comp.astype(np.uint8), k_rc) > 0
+            comp = comp | (comp_dil & reclaim_base)
         # Erode the component before sampling 3D points: boundary pixels carry
         # mixed depth (object vs table/arm) and would corrupt the distance.
         erode_px = int(getattr(cfg, "collision_obj_erode_px", 3))
@@ -475,6 +509,29 @@ def detect_scene_objects_2d(
         obj_pts = obj_pts[keep_z]
         obj_col = obj_col[keep_z]
 
+        # Признаки протечки руки: прилип ли блоб к маске руки и совпадает ли
+        # его глубина с локальной глубиной руки рядом. Решение об отбраковке
+        # принимает CollisionService при создании трека (не здесь), чтобы уже
+        # подтверждённый объект не «исчезал» при подходе руки вплотную.
+        touches_arm = False
+        arm_depth_delta = float("inf")
+        if np.count_nonzero(manipulator_mask) > 0:
+            t_px = ex_px + 5
+            k_t = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * t_px + 1, 2 * t_px + 1)
+            )
+            near_arm = (cv2.dilate(comp.astype(np.uint8), k_t) > 0) & (
+                manipulator_mask > 0
+            )
+            touches_arm = bool(np.any(near_arm))
+            if touches_arm and z_img is not None:
+                z_vals = z_img[near_arm]
+                z_vals = z_vals[np.isfinite(z_vals)]
+                if z_vals.size > 0:
+                    arm_depth_delta = abs(
+                        float(np.median(obj_pts[:, 2])) - float(np.median(z_vals))
+                    )
+
         aabb_min = obj_pts.min(axis=0)
         aabb_max = obj_pts.max(axis=0)
         objects.append(
@@ -485,6 +542,8 @@ def detect_scene_objects_2d(
                 centroid=obj_pts.mean(axis=0),
                 aabb_min=aabb_min,
                 aabb_max=aabb_max,
+                touches_arm=touches_arm,
+                arm_depth_delta_m=arm_depth_delta,
             )
         )
         obj_id += 1

@@ -20,7 +20,8 @@ class KukaDriver:
         if not self.robot.can_connect:
             raise ConnectionError("Cannot connect to robot")
         
-        self.name = self.robot.read('$ROBNAME[]', debug=False).decode()
+        raw = self.robot.read('$ROBNAME[]', debug=False)
+        self.name = raw.decode() if raw is not None else "KUKA"
         
         # Текущие координаты
         self.x_cartesian = 0.0
@@ -99,29 +100,45 @@ class KukaDriver:
     
     def set_base(self, base: int):
         """Устанавливает базу."""
+        if base == 0:
+            return  # BASE 0 = WORLD, дефолт контроллера — не трогаем
         time.sleep(0.1)
-        base_data = self.robot.read(f"BASE_DATA[{base}]", False).decode()
-        self.robot.write("COM_FRAME", base_data)
+        raw = self.robot.read(f"BASE_DATA[{base}]", False)
+        if raw is None:
+            print(f"[KUKA] Cannot read BASE_DATA[{base}], skipping")
+            return
+        self.robot.write("COM_FRAME", raw.decode())
         self.robot.write("COM_CASEVAR", "1")
-        while int(self.robot.read("COM_CASEVAR", False).decode()) != 0:
-            continue
-    
+        while True:
+            r = self.robot.read("COM_CASEVAR", False)
+            if r is None or int(r.decode()) == 0:
+                break
+
     def set_tool(self, tool: int):
         """Устанавливает инструмент."""
+        if tool == 0:
+            return  # TOOL 0 = фланец, дефолт контроллера — не трогаем
         time.sleep(0.1)
-        tool_data = self.robot.read(f"TOOL_DATA[{tool}]", False).decode()
-        self.robot.write("COM_FRAME", tool_data)
+        raw = self.robot.read(f"TOOL_DATA[{tool}]", False)
+        if raw is None:
+            print(f"[KUKA] Cannot read TOOL_DATA[{tool}], skipping")
+            return
+        self.robot.write("COM_FRAME", raw.decode())
         self.robot.write("COM_CASEVAR", "2")
-        while int(self.robot.read("COM_CASEVAR", False).decode()) != 0:
-            continue
+        while True:
+            r = self.robot.read("COM_CASEVAR", False)
+            if r is None or int(r.decode()) == 0:
+                break
     
     def set_speed(self, value: int):
         """Устанавливает скорость."""
         time.sleep(0.1)
         self.robot.write("COM_VALUE1", str(value), False)
         self.robot.write("COM_CASEVAR", "3", False)
-        while int(self.robot.read("COM_CASEVAR", False).decode()) != 0:
-            continue
+        while True:
+            r = self.robot.read("COM_CASEVAR", False)
+            if r is None or int(r.decode()) == 0:
+                break
     
     def send_frame(self, arr, system_variable: str = ""):
         """Отправляет кадр координат."""
