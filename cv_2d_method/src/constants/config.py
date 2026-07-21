@@ -130,3 +130,17 @@ ROBOT_LIMITS = {
 FPS_UPDATE_INTERVAL = 30  # обновление FPS каждые N кадров
 GRIPPER_LOG_INTERVAL = 30  # логирование хвата каждые N кадров
 
+# ============================================================================
+# ВАЛИДАЦИЯ (Задачи 1-2): ПОКАДРОВЫЙ ЛОГ РЕШЕНИЙ И ЛОГ ОСТАНОВОВ
+# По умолчанию всё выключено — поведение системы не меняется.
+# ============================================================================
+ENABLE_DECISION_LOG = False                       # perf/objects CSV покадрово
+DECISION_PERF_LOG_PATH = 'captures/perf_log_2d.csv'
+OBJECTS_CSV_PATH = 'captures/objects_2d.csv'
+SCENARIO_ID = ''                                  # проставляет сценарный раннер
+
+ENABLE_STOP_LOG = False                           # лог событий останова
+STOP_EVENTS_CSV_PATH = 'captures/stop_events.csv'
+STOP_SPEED_EPS_DEG_S = 0.5    # порог «робот стоит»: |dA/dt| всех осей ниже (град/с)
+STOP_CONFIRM_FRAMES_STOPPED = 3  # столько кадров подряд ниже порога = остановился
+

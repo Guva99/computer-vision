@@ -31,6 +31,14 @@ class FrameResult:
     colors: np.ndarray
     collision_level: str = "SAFE"  # SAFE/WARN/DANGER — сигнал для остановки робота
     stage_times: dict = field(default_factory=dict)
+    # ── данные для валидации (Задача 1): только возврат наружу, логика не менялась ──
+    t_capture: float = 0.0        # perf_counter на момент захвата кадра (из раннера)
+    t_decision: float = 0.0       # perf_counter сразу после вычисления коллизии
+    min_dist_m: float = float("nan")  # минимальная дистанция рука↔объект по кадру
+    n_objects: int = 0            # число подтверждённых объектов сцены
+    objects: list = field(default_factory=list)  # [{obj_id, part, dist_m, level}, ...]
+    joint_angles: Optional[tuple] = None  # углы A1..A6 на этом кадре (для лога останова)
+    manipulator_mask: Optional[np.ndarray] = None  # маска руки (для дампа масок, Задача 6)
 
 
 class PerceptionPipeline:
@@ -47,7 +55,7 @@ class PerceptionPipeline:
     def close(self) -> None:
         self.joint_reader.close()
 
-    def process(self, frame, frame_count: int) -> FrameResult:
+    def process(self, frame, frame_count: int, t_capture: float = 0.0) -> FrameResult:
         cfg = self.cfg
         color_bgr, depth, intrinsics, depth_scale = frame
         st = {}
@@ -105,7 +113,9 @@ class PerceptionPipeline:
             masks, self.fk_projector, points, colors, valid_flat,
             color_bgr, intrinsics, joint_angles, frame_count, self.visualizer.vis,
         )
-        _ck_scene = time.perf_counter()
+        # Момент принятия решения о коллизии — для latency_ms (Задача 1)
+        t_decision = time.perf_counter()
+        _ck_scene = t_decision
         st["scene"] = _ck_scene - _ck_masks
 
         # ── stage: draw (детекция хвата/запястья + рисование) ──
@@ -149,4 +159,17 @@ class PerceptionPipeline:
             colors=colors,
             collision_level=cf.worst_level,
             stage_times=st,
+            t_capture=t_capture,
+            t_decision=t_decision,
+            min_dist_m=min(
+                (r.min_dist_m for r in cf.results), default=float("nan")
+            ),
+            n_objects=len(cf.scene_objects),
+            objects=[
+                {"obj_id": r.obj_id, "part": r.part,
+                 "dist_m": r.min_dist_m, "level": r.level}
+                for r in cf.results
+            ],
+            joint_angles=joint_angles,
+            manipulator_mask=masks.manipulator,
         )

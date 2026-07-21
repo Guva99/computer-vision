@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import open3d as o3d
 
+from app.decision_log import ObjectsCsvLogger
 from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
 from collision import LEVEL_ORDER
@@ -38,6 +39,12 @@ class AppRunner:
         self.visualizer = CloudVisualizer(cfg)
         self.pipeline = PerceptionPipeline(cfg, self.visualizer)
         self.perf = PerfMonitor(cfg)
+        # Покадровый лог решений (Задача 1): objects.csv + доп. колонки perf CSV
+        self.objects_log: ObjectsCsvLogger | None = None
+        if cfg.enable_decision_log:
+            self.objects_log = ObjectsCsvLogger(
+                cfg.objects_csv_path, scenario_id=cfg.scenario_id
+            )
 
         # ── Управление роботом: цикл движения + остановка по коллизии ──
         # Отдельное соединение с контроллером (JointAngleReader держит своё на чтение).
@@ -93,7 +100,8 @@ class AppRunner:
                 _t_grab = time.perf_counter() - _t0
 
                 frame_count += 1
-                result = self.pipeline.process(frame, frame_count)
+                # _t0 = t_capture (Задача 1): от него считается latency решения
+                result = self.pipeline.process(frame, frame_count, t_capture=_t0)
 
                 # ── реакция робота на коллизию (edge-triggered, как в 2D) ──
                 # Дебаунс: стоп только после N подряд DANGER-кадров — одиночные
@@ -111,7 +119,28 @@ class AppRunner:
                 # ── мониторинг ресурсов ПК (CPU/RAM/GPU) ──
                 _t_total = time.perf_counter() - _t0
                 inst_fps = 1.0 / _t_total if _t_total > 0 else 0.0
-                self.perf.sample(frame_count, inst_fps, result.stage_times)
+                decision = None
+                if cfg.enable_decision_log:
+                    decision = {
+                        "collision_level": result.collision_level,
+                        "n_objects": result.n_objects,
+                        "min_dist_m": (round(result.min_dist_m, 4)
+                                       if result.min_dist_m == result.min_dist_m
+                                       else ""),
+                        "latency_ms": round(
+                            (result.t_decision - result.t_capture) * 1000.0, 1
+                        ),
+                        "robot_paused": int(
+                            self.robot.is_paused
+                            if (self.robot is not None and self.robot.is_connected)
+                            else 0
+                        ),
+                        "scenario_id": cfg.scenario_id,
+                    }
+                    if self.objects_log is not None:
+                        self.objects_log.log_frame(frame_count, result.objects)
+                self.perf.sample(frame_count, inst_fps, result.stage_times,
+                                 decision=decision)
                 self._draw_perf(result.overlay)
 
                 cv2.imshow("RGB", result.overlay)
@@ -161,6 +190,8 @@ class AppRunner:
             cv2.destroyAllWindows()
             self.pipeline.close()
             self.perf.close()
+            if self.objects_log is not None:
+                self.objects_log.close()
 
     def _draw_perf(self, overlay) -> None:
         """Нарисовать CPU/RAM/GPU в правом-нижнем углу кадра."""

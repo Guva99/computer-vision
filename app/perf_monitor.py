@@ -207,7 +207,12 @@ class PerfMonitor:
             print(f"[PERF] Мониторинг включён. CPU cores={self.n_cores}  {gpu_state}  "
                   f"log -> {self.log_path}")
 
-    def sample(self, frame_count: int, fps: float, stage_times: dict = None):
+    def sample(self, frame_count: int, fps: float, stage_times: dict = None,
+               decision: dict = None):
+        """decision — необязательные колонки покадрового лога решений (Задача 1):
+        collision_level, n_objects, min_dist_m, latency_ms, robot_paused,
+        scenario_id. При None (флаг enable_decision_log выключен) формат CSV
+        не меняется."""
         if not (self.enabled and _PSUTIL):
             return
         cpu_sys = psutil.cpu_percent(None)
@@ -237,6 +242,8 @@ class PerfMonitor:
         if stage_times:
             for k, v in stage_times.items():
                 row[f"t_{k}_ms"] = round(v * 1000.0, 1)
+        if decision:
+            row.update(decision)
 
         self._rows.append(row)
         self._last = row

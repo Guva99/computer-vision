@@ -26,6 +26,13 @@ class AppConfig:
     perf_window: bool = True             # отдельное окно с графиками (как в 2D-программе)
     perf_gpu_every_n: int = 15           # снимать GPU раз в N кадров (счётчик дороговат)
     perf_log_path: str = "captures/perf_log.csv"
+    # ── Покадровый лог решений (валидация, Задача 1) ─────────────────────────
+    # При True в perf_log.csv добавляются колонки collision_level, n_objects,
+    # min_dist_m, latency_ms, robot_paused, scenario_id, а детализация по
+    # объектам пишется в objects_csv_path. False = прежний формат CSV.
+    enable_decision_log: bool = False
+    objects_csv_path: str = "captures/objects.csv"
+    scenario_id: str = ""                # проставляется сценарным раннером
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)

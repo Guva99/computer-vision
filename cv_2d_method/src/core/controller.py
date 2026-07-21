@@ -9,6 +9,8 @@ SystemController - Главный контроллер системы.
 - Облако точек (Open3D) для 3D визуализации
 - Комбинированная проверка столкновений (2D bbox + глубина)
 """
+import time
+
 import numpy as np
 from typing import Optional, Callable
 
@@ -22,9 +24,13 @@ from src.features.camera.ui.point_cloud_window import PointCloudWindow
 from src.features.camera.ui.monitor_window import MonitorWindow
 from src.features.robot.services.robot_service import RobotService
 from src.utils.system_monitor import sample_system_stats, FPSCounter
+from src.utils.perf_logger import (
+    PerfLogger2D, gripper_object_distance_m, min_gripper_object_distance_m
+)
 from src.constants.config import (
     CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS,
-    STABLE_THRESHOLD, TRACK_PERSIST, GRIPPER_LOG_INTERVAL
+    STABLE_THRESHOLD, TRACK_PERSIST, GRIPPER_LOG_INTERVAL,
+    ENABLE_DECISION_LOG, DECISION_PERF_LOG_PATH, OBJECTS_CSV_PATH, SCENARIO_ID,
 )
 
 
@@ -79,6 +85,14 @@ class SystemController:
         self._running = False
         self._gripper_log_counter = 0
         self._last_collision_state = False  # Для отслеживания изменения состояния
+        self._frame_idx = 0  # сквозной номер кадра (для логов валидации)
+
+        # Покадровый лог решений (Задача 1); None при выключенном флаге
+        self.perf_logger: Optional[PerfLogger2D] = None
+        if ENABLE_DECISION_LOG:
+            self.perf_logger = PerfLogger2D(
+                DECISION_PERF_LOG_PATH, OBJECTS_CSV_PATH, scenario_id=SCENARIO_ID
+            )
         
         # Callbacks
         self._on_gripper_detected: Optional[Callable] = None
@@ -189,21 +203,25 @@ class SystemController:
         Returns:
             True для продолжения, False для выхода
         """
-        # Получаем кадры
+        # Получаем кадры (t_capture — точка отсчёта latency, Задача 1)
+        t_capture = time.perf_counter()
         depth_frame, color_frame, _ = self.camera_service.get_frames()
-        
+
         if depth_frame is None or color_frame is None:
             return True
-        
+
+        self._frame_idx += 1
+
         # Получаем данные
         color_image = np.asanyarray(color_frame.get_data())
         intrinsics = self.camera_service.get_intrinsics(color_frame)
         depth_scale = self.camera_service.get_depth_scale()
-        
+
         # Применяем фильтры глубины
         depth_frame = self.depth_processor.apply_depth_filters(depth_frame)
-        
-        collision, detected_objects, gripper_info, color_image = self._process_frame_2d(
+
+        (collision, detected_objects, gripper_info, color_image,
+         colliding, t_decision) = self._process_frame_2d(
             color_image=color_image,
             depth_frame=depth_frame,
             depth_scale=depth_scale,
@@ -227,10 +245,51 @@ class SystemController:
         
         # Получаем системную статистику
         cpu, memory, threads = sample_system_stats()
-        
+
         # Обновляем окно мониторинга
         if self.monitor_window:
             self.monitor_window.update(cpu, memory, fps, threads)
+
+        # ── Покадровый лог решений (Задача 1) ──
+        if self.perf_logger is not None:
+            robot_paused = bool(
+                self.robot_service.is_paused
+                if (self.robot_service and self.robot_service.is_connected)
+                else False
+            )
+            min_dist = min_gripper_object_distance_m(
+                gripper_info, detected_objects, intrinsics
+            )
+            self.perf_logger.sample(
+                frame=self._frame_idx,
+                fps=fps,
+                cpu=cpu,
+                ram_mb=memory,
+                threads=threads,
+                collision_level="DANGER" if collision else "SAFE",
+                n_objects=len(detected_objects),
+                min_dist_m=min_dist,
+                latency_ms=(t_decision - t_capture) * 1000.0,
+                robot_paused=robot_paused,
+            )
+            colliding_ids = {id(o) for o in colliding}
+            obj_rows = []
+            for i, obj in enumerate(detected_objects):
+                if id(obj) in colliding_ids:
+                    level = "DANGER"
+                elif obj.get('is_obstacle', False):
+                    level = "WARN"
+                else:
+                    level = "SAFE"
+                obj_rows.append({
+                    "obj_id": i,
+                    "part": "gripper",
+                    "dist_m": gripper_object_distance_m(
+                        gripper_info, obj, intrinsics
+                    ),
+                    "level": level,
+                })
+            self.perf_logger.log_objects(self._frame_idx, obj_rows)
         
         # Опциональное окно облака точек (только визуализация, не детекция)
         if self.enable_point_cloud and self.point_cloud_window and self.depth_processor:
@@ -308,10 +367,12 @@ class SystemController:
         )
         
         # === ПРОВЕРКА СТОЛКНОВЕНИЙ ===
-        collision, _ = self.gripper_detector.check_collision(
+        collision, colliding = self.gripper_detector.check_collision(
             gripper_info, detected_objects
         )
-        
+        # Момент принятия решения о коллизии — для latency_ms (Задача 1)
+        t_decision = time.perf_counter()
+
         # === ОТРИСОВКА ===
         color_image = self.obstacle_detector.draw_objects(
             color_image, detected_objects, gripper_height
@@ -319,8 +380,8 @@ class SystemController:
         color_image = self.gripper_detector.draw_gripper(
             color_image, gripper_info, collision=collision
         )
-        
-        return collision, detected_objects, gripper_info, color_image
+
+        return collision, detected_objects, gripper_info, color_image, colliding, t_decision
     
     def _on_click(self, x_3d: float, y_3d: float, z_3d: float, distance_m: float, robot_z: float):
         """
@@ -423,7 +484,10 @@ class SystemController:
         
         if self.robot_service:
             self.robot_service.disconnect()
-        
+
+        if self.perf_logger is not None:
+            self.perf_logger.close()
+
         print("  System stopped.")
         print("=" * 60 + "\n")
 
