@@ -27,10 +27,13 @@ from src.utils.system_monitor import sample_system_stats, FPSCounter
 from src.utils.perf_logger import (
     PerfLogger2D, gripper_object_distance_m, min_gripper_object_distance_m
 )
+from src.utils.stop_event_logger import StopEventTracker
 from src.constants.config import (
     CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS,
     STABLE_THRESHOLD, TRACK_PERSIST, GRIPPER_LOG_INTERVAL,
     ENABLE_DECISION_LOG, DECISION_PERF_LOG_PATH, OBJECTS_CSV_PATH, SCENARIO_ID,
+    ENABLE_STOP_LOG, STOP_EVENTS_CSV_PATH, STOP_SPEED_EPS_DEG_S,
+    STOP_CONFIRM_FRAMES_STOPPED,
 )
 
 
@@ -93,6 +96,18 @@ class SystemController:
             self.perf_logger = PerfLogger2D(
                 DECISION_PERF_LOG_PATH, OBJECTS_CSV_PATH, scenario_id=SCENARIO_ID
             )
+
+        # Лог событий останова (Задача 2); None при выключенном флаге
+        self.stop_tracker: Optional[StopEventTracker] = None
+        if ENABLE_STOP_LOG:
+            self.stop_tracker = StopEventTracker(
+                STOP_EVENTS_CSV_PATH, contour="2D", scenario_id=SCENARIO_ID,
+                speed_eps_deg_s=STOP_SPEED_EPS_DEG_S,
+                confirm_frames=STOP_CONFIRM_FRAMES_STOPPED,
+            )
+        # История 3D-позиции хвата — для оценки скорости звена в момент DANGER
+        self._prev_gripper_3d = None
+        self._prev_gripper_t = None
         
         # Callbacks
         self._on_gripper_detected: Optional[Callable] = None
@@ -232,9 +247,40 @@ class SystemController:
         if self.robot_service and self.robot_service.is_connected:
             if collision and not self._last_collision_state:
                 self.robot_service.stop_movement()
+                # ── событие останова (Задача 2): t_danger + скорость хвата ──
+                if self.stop_tracker is not None:
+                    t_danger = time.perf_counter()
+                    link_speed = self._estimate_gripper_speed(
+                        gripper_info, t_danger
+                    )
+                    self.stop_tracker.mark_danger(
+                        self._frame_idx, t_capture, t_danger,
+                        min_gripper_object_distance_m(
+                            gripper_info, colliding, intrinsics
+                        ),
+                        link_speed,
+                    )
             elif not collision and self._last_collision_state:
                 self.robot_service.resume_movement()
+                if self.stop_tracker is not None:
+                    self.stop_tracker.mark_resumed()
             self._last_collision_state = collision
+
+        # ── детект физической остановки по $AXIS_ACT (Задача 2) ──
+        # Углы читаются ТОЛЬКО пока ждём остановку — чтение блокирующее,
+        # в обычном цикле оно не выполняется и FPS не страдает.
+        if self.stop_tracker is not None:
+            angles = None
+            if (self.stop_tracker.waiting_stop and self.robot_service
+                    and self.robot_service.is_connected):
+                angles = self.robot_service.get_joint_angles()
+            self.stop_tracker.update(
+                self._frame_idx, time.perf_counter(), angles
+            )
+        # История позиции хвата для оценки скорости в момент DANGER
+        if gripper_info is not None and gripper_info.get('position_3d') is not None:
+            self._prev_gripper_3d = gripper_info['position_3d']
+            self._prev_gripper_t = time.perf_counter()
         
         # Счётчики
         current_count = len(detected_objects)
@@ -383,6 +429,21 @@ class SystemController:
 
         return collision, detected_objects, gripper_info, color_image, colliding, t_decision
     
+    def _estimate_gripper_speed(self, gripper_info, t_now) -> Optional[float]:
+        """Модуль линейной скорости хвата (м/с) по разнице 3D-позиций между
+        кадрами — для оценки минимальной безопасной дистанции (Задача 2)."""
+        if (gripper_info is None or gripper_info.get('position_3d') is None
+                or self._prev_gripper_3d is None or self._prev_gripper_t is None):
+            return None
+        dt = t_now - self._prev_gripper_t
+        if dt <= 1e-6:
+            return None
+        cur = gripper_info['position_3d']
+        prev = self._prev_gripper_3d
+        d = ((cur[0] - prev[0]) ** 2 + (cur[1] - prev[1]) ** 2
+             + (cur[2] - prev[2]) ** 2) ** 0.5
+        return d / dt
+
     def _on_click(self, x_3d: float, y_3d: float, z_3d: float, distance_m: float, robot_z: float):
         """
         Обработчик клика - отправляет команду роботу.
@@ -487,6 +548,9 @@ class SystemController:
 
         if self.perf_logger is not None:
             self.perf_logger.close()
+
+        if self.stop_tracker is not None:
+            self.stop_tracker.close()
 
         print("  System stopped.")
         print("=" * 60 + "\n")

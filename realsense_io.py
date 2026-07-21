@@ -33,6 +33,13 @@ class AppConfig:
     enable_decision_log: bool = False
     objects_csv_path: str = "captures/objects.csv"
     scenario_id: str = ""                # проставляется сценарным раннером
+    # ── Лог событий останова (валидация, Задача 2) ───────────────────────────
+    # Фиксирует t_danger при stop_movement() и t_stop, когда угловые скорости
+    # всех суставов ($AXIS_ACT) ниже порога N кадров подряд → stop_events.csv.
+    enable_stop_log: bool = False
+    stop_events_csv_path: str = "captures/stop_events.csv"
+    stop_speed_eps_deg_s: float = 0.5       # порог «робот стоит» (град/с)
+    stop_confirm_frames_stopped: int = 3    # кадров подряд ниже порога
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)

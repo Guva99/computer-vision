@@ -15,7 +15,9 @@ import open3d as o3d
 from app.decision_log import ObjectsCsvLogger
 from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
+from app.stop_log import StopEventTracker, estimate_link_speed_m_s
 from collision import LEVEL_ORDER
+from kuka_fk import fk_joints
 from pointcloud_pipeline import to_open3d_cloud
 from realsense_io import AppConfig, RealSenseCamera
 from robot.cycle_path import build_home_and_sweep
@@ -45,6 +47,18 @@ class AppRunner:
             self.objects_log = ObjectsCsvLogger(
                 cfg.objects_csv_path, scenario_id=cfg.scenario_id
             )
+        # Лог событий останова (Задача 2): DANGER → stop_movement → t_stop
+        self.stop_tracker: StopEventTracker | None = None
+        if cfg.enable_stop_log:
+            self.stop_tracker = StopEventTracker(
+                cfg.stop_events_csv_path, contour="3D",
+                scenario_id=cfg.scenario_id,
+                speed_eps_deg_s=cfg.stop_speed_eps_deg_s,
+                confirm_frames=cfg.stop_confirm_frames_stopped,
+            )
+        # FK-положения предыдущего кадра — для оценки линейной скорости звена
+        self._prev_fk_positions = None
+        self._prev_fk_t = 0.0
 
         # ── Управление роботом: цикл движения + остановка по коллизии ──
         # Отдельное соединение с контроллером (JointAngleReader держит своё на чтение).
@@ -112,9 +126,48 @@ class AppRunner:
                     danger = self._danger_streak >= cfg.collision_stop_confirm_frames
                     if danger and not self._last_danger:
                         self.robot.stop_movement()
+                        # ── событие останова (Задача 2): t_danger + скорость звена ──
+                        if self.stop_tracker is not None:
+                            t_danger = time.perf_counter()
+                            link_speed = None
+                            if result.joint_angles is not None:
+                                positions = fk_joints(
+                                    result.joint_angles,
+                                    gripper_length_m=cfg.fk_gripper_length_m,
+                                )
+                                part = None
+                                if result.objects:
+                                    part = min(
+                                        result.objects, key=lambda o: o["dist_m"]
+                                    )["part"]
+                                link_speed = estimate_link_speed_m_s(
+                                    self._prev_fk_positions, positions,
+                                    t_danger - self._prev_fk_t, part,
+                                )
+                            self.stop_tracker.mark_danger(
+                                frame_count, result.t_capture, t_danger,
+                                result.min_dist_m
+                                if result.min_dist_m == result.min_dist_m else None,
+                                link_speed,
+                            )
                     elif not danger and self._last_danger:
                         self.robot.resume_movement()
+                        if self.stop_tracker is not None:
+                            self.stop_tracker.mark_resumed()
                     self._last_danger = danger
+
+                # ── детект физической остановки по углам (Задача 2) ──
+                if self.stop_tracker is not None:
+                    _t_now = time.perf_counter()
+                    self.stop_tracker.update(
+                        frame_count, _t_now, result.joint_angles
+                    )
+                    if result.joint_angles is not None:
+                        self._prev_fk_positions = fk_joints(
+                            result.joint_angles,
+                            gripper_length_m=cfg.fk_gripper_length_m,
+                        )
+                        self._prev_fk_t = _t_now
 
                 # ── мониторинг ресурсов ПК (CPU/RAM/GPU) ──
                 _t_total = time.perf_counter() - _t0
@@ -192,6 +245,8 @@ class AppRunner:
             self.perf.close()
             if self.objects_log is not None:
                 self.objects_log.close()
+            if self.stop_tracker is not None:
+                self.stop_tracker.close()
 
     def _draw_perf(self, overlay) -> None:
         """Нарисовать CPU/RAM/GPU в правом-нижнем углу кадра."""
