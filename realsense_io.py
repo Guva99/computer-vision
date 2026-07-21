@@ -60,6 +60,11 @@ class AppConfig:
     # с gt_masks из tools/annotate.py для tools/compute_metrics.py).
     dump_masks_every_n: int = 0
     masks_dump_dir: str = "captures/masks"
+    # ── Benchmark-режим (валидация, Задача 9) ────────────────────────────────
+    # True = принудительно отключить визуализацию, искажающую замеры ресурсов:
+    # show_o3d_window (~60 мс/кадр), perf_window, perf_overlay, debug-мозаику
+    # и дамп масок. Применяется в AppRunner при старте.
+    benchmark_mode: bool = False
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
     fk_skeleton_thick: bool = True       # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)

@@ -37,6 +37,17 @@ def save_full_cloud(output_dir, points, colors):
 class AppRunner:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
+        # Benchmark-режим (Задача 9): отключить всё, что искажает замеры
+        # ресурсов (окно Open3D ~60 мс/кадр, окна/оверлеи мониторинга, дампы).
+        if cfg.benchmark_mode:
+            cfg.show_o3d_window = False
+            cfg.perf_window = False
+            cfg.perf_overlay = False
+            cfg.show_debug_masks = False
+            cfg.dump_masks_every_n = 0
+            print("[BENCHMARK] benchmark_mode=True → show_o3d_window, "
+                  "perf_window, perf_overlay, debug-мозаика и дамп масок "
+                  "принудительно отключены")
         # Источник кадров (Задача 3): live-камера или воспроизведение записи
         self._playback = cfg.source_mode == "playback"
         if self._playback:

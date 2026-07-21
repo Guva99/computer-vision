@@ -36,7 +36,7 @@ from src.constants.config import (
     STOP_CONFIRM_FRAMES_STOPPED,
     ENABLE_RECORDING, RECORDING_PATH, RECORDING_JOINTS_EVERY_N,
     SOURCE_MODE, PLAYBACK_PATH, MAX_RUN_SECONDS,
-    DUMP_MASKS_EVERY_N, MASKS_DUMP_DIR,
+    DUMP_MASKS_EVERY_N, MASKS_DUMP_DIR, BENCHMARK_MODE,
 )
 
 
@@ -73,6 +73,11 @@ class SystemController:
                   "воспроизведения робот не управляется")
             enable_robot = False
         self.enable_robot = enable_robot
+        # Benchmark-режим (Задача 9): без окна облака точек и мониторинга —
+        # замеры CPU/RAM/FPS не искажаются визуализацией.
+        if BENCHMARK_MODE and enable_point_cloud:
+            print("[BENCHMARK] Окно облака точек отключено (BENCHMARK_MODE)")
+            enable_point_cloud = False
         self.enable_point_cloud = enable_point_cloud
 
         # Рекордер (Задача 3); None при выключенном флаге или в playback
@@ -179,8 +184,10 @@ class SystemController:
             on_click_callback=self._on_click if self.enable_robot else None
         )
         
-        # Окно мониторинга системы (CPU, RAM, FPS)
-        self.monitor_window = MonitorWindow(title='System Monitor')
+        # Окно мониторинга системы (CPU, RAM, FPS); в benchmark-режиме
+        # не создаётся, чтобы не искажать замеры (Задача 9)
+        if not BENCHMARK_MODE:
+            self.monitor_window = MonitorWindow(title='System Monitor')
         
         if self.enable_point_cloud:
             self.point_cloud_window = PointCloudWindow(title='Point Cloud')
@@ -347,8 +354,9 @@ class SystemController:
         if self.monitor_window:
             self.monitor_window.update(cpu, memory, fps, threads)
 
-        # ── дамп масок для IoU (Задача 6) ──
-        if DUMP_MASKS_EVERY_N > 0 and self._frame_idx % DUMP_MASKS_EVERY_N == 0:
+        # ── дамп масок для IoU (Задача 6); в benchmark-режиме отключён ──
+        if (DUMP_MASKS_EVERY_N > 0 and not BENCHMARK_MODE
+                and self._frame_idx % DUMP_MASKS_EVERY_N == 0):
             self._dump_masks(color_image.shape[:2], detected_objects, gripper_info)
 
         # ── Покадровый лог решений (Задача 1) ──
