@@ -24,6 +24,9 @@ class CollisionFrame:
     results: list = field(default_factory=list)
     worst_level: str = "SAFE"
     worst_focus: object = None
+    # Отбракованные кандидаты с причиной (Задача 8, анализ отказов);
+    # заполняется только при enable_decision_log.
+    rejects: list = field(default_factory=list)
 
 
 class CollisionService:
@@ -40,7 +43,8 @@ class CollisionService:
         self._T_rc = None  # кэш inv(T_cr) для workspace-фильтра (база ← камера)
         self._ws_dbg_count = 0  # троттлинг диагностики workspace-фильтра
 
-    def _confirm_objects(self, scene_objects, body_ds, gripper_spheres):
+    def _confirm_objects(self, scene_objects, body_ds, gripper_spheres,
+                         reject_log=None):
         """Оставить только объекты, стабильно видимые >=N кадров в одном месте.
         Мигающие протечки руки (случайные места) отсекаются, кубик проходит.
 
@@ -87,6 +91,8 @@ class CollisionService:
                     and getattr(obj, "arm_depth_delta_m", float("inf"))
                     < float(getattr(cfg, "collision_obj_arm_depth_delta_m", 0.03))
                 ):
+                    if reject_log is not None:
+                        reject_log.append({"reject_reason": "arm_depth_reject"})
                     continue
                 self._tracks.append({
                     "centroid": c, "hits": 1, "miss": 0, "obj": obj,
@@ -120,6 +126,11 @@ class CollisionService:
                 )
                 if min(d, d_g) <= warn_m:
                     confirmed.append(t["obj"])
+                    continue
+            # Кандидат виден в этом кадре, но подтверждение ещё не набрано —
+            # для анализа отказов (Задача 8) это причина "not_confirmed".
+            if reject_log is not None and t["miss"] == 0:
+                reject_log.append({"reject_reason": "not_confirmed"})
         # Пере-нумерация: coasting может вернуть объект со «старым» obj_id,
         # совпадающим со свежим — а results ищутся по obj_id.
         for k, obj in enumerate(confirmed):
@@ -140,6 +151,11 @@ class CollisionService:
         ):
             return cf
 
+        # Сбор причин отбраковки (Задача 8) — только при включённом логе решений
+        reject_log = (cf.rejects
+                      if bool(getattr(cfg, "enable_decision_log", False))
+                      else None)
+
         if cfg.collision_use_2d_detection:
             cf.scene_objects, cf.scene_obj_mask_2d = collision_mod.detect_scene_objects_2d(
                 points,
@@ -149,6 +165,7 @@ class CollisionService:
                 color_bgr.shape[:2],
                 cfg,
                 color_bgr=color_bgr,
+                reject_log=reject_log,
             )
         else:
             _, (scene_pts, scene_col) = split_cloud_by_mask(
@@ -179,6 +196,8 @@ class CollisionService:
                     kept.append(obj)
                 else:
                     dropped.append(p[:3])
+                    if reject_log is not None:
+                        reject_log.append({"reject_reason": "workspace_filter"})
             cf.scene_objects = kept
             # Диагностика тюнинга бокса: куда реально попадают отброшенные
             # объекты в базе робота (печать раз в ~30 кадров с отбросом).
@@ -212,7 +231,8 @@ class CollisionService:
         # body_ds/gripper_spheres нужны для fast-path (кандидат уже в WARN-зоне).
         if cfg.collision_persist_frames > 1:
             cf.scene_objects = self._confirm_objects(
-                cf.scene_objects, body_ds, gripper_spheres
+                cf.scene_objects, body_ds, gripper_spheres,
+                reject_log=reject_log,
             )
         # Растеризация точек объектов нужна только для debug-мозаики
         # (Python-цикл по точкам — дорого). Строим лишь когда показываем debug.

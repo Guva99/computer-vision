@@ -42,6 +42,7 @@ class FrameResult:
     manipulator_mask: Optional[np.ndarray] = None  # маска руки (для дампа масок, Задача 6)
     scene_objects_mask: Optional[np.ndarray] = None  # маска подтверждённых объектов
     # (строится только на кадрах дампа: dump_masks_every_n > 0)
+    rejects: list = field(default_factory=list)  # причины отбраковки (Задача 8)
 
 
 class PerceptionPipeline:
@@ -185,4 +186,5 @@ class PerceptionPipeline:
             joint_angles=joint_angles,
             manipulator_mask=masks.manipulator,
             scene_objects_mask=scene_objects_mask,
+            rejects=cf.rejects,
         )

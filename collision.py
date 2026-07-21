@@ -328,6 +328,7 @@ def detect_scene_objects_2d(
     image_shape: Tuple[int, int],
     cfg,
     color_bgr: Optional[np.ndarray] = None,
+    reject_log: Optional[list] = None,
 ) -> Tuple[List[SceneObject], np.ndarray]:
     """
     Detect scene objects from 2D valid-depth mask minus manipulator (like arm segmentation).
@@ -337,6 +338,11 @@ def detect_scene_objects_2d(
     candidate mask is further restricted to *contrasting* pixels — either bright
     (white box) or colour-saturated (green cube) — so the dark, desaturated
     table surface is rejected instead of being detected as a foreign object.
+
+    `reject_log` (Задача 8, анализ отказов): если передан список, в него
+    добавляются записи об отбракованных кандидатах с причиной
+    (`reject_reason`: area_min/area_max/shape_filter/frame_border/
+    few_points_3d/depth_filter). На логику детекции не влияет.
     """
     global _dbg2d_call_count
     h, w = int(image_shape[0]), int(image_shape[1])
@@ -448,9 +454,16 @@ def detect_scene_objects_2d(
     obj_id = 0
     n_kept = 0
 
+    def _reject(reason: str, area_px: int) -> None:
+        # Сбор причин отбраковки (Задача 8); включается только когда
+        # передан reject_log — иначе ноль накладных расходов.
+        if reject_log is not None:
+            reject_log.append({"reject_reason": reason, "area_px": area_px})
+
     for lab in range(1, n_comp):
         area = int(stats[lab, cv2.CC_STAT_AREA])
         if area < min_area or area > max_area:
+            _reject("area_min" if area < min_area else "area_max", area)
             continue
         x0 = int(stats[lab, cv2.CC_STAT_LEFT])
         y0 = int(stats[lab, cv2.CC_STAT_TOP])
@@ -460,6 +473,7 @@ def detect_scene_objects_2d(
         fill_ratio = float(area) / float(max(1, bw * bh))
         aspect = float(max(bw, bh)) / float(max(1, min(bw, bh)))
         if fill_ratio < min_fill or aspect > max_aspect:
+            _reject("shape_filter", area)
             continue
         if drop_border:
             if (
@@ -468,6 +482,7 @@ def detect_scene_objects_2d(
                 or (x0 + bw) >= (w - border_px)
                 or (y0 + bh) >= (h - border_px)
             ):
+                _reject("frame_border", area)
                 continue
 
         comp = labels == lab
@@ -492,10 +507,12 @@ def detect_scene_objects_2d(
                 comp_sample = eroded
         sel = comp_sample.reshape(-1)[valid_flat]
         if not np.any(sel):
+            _reject("few_points_3d", area)
             continue
         obj_pts = points[sel]
         obj_col = colors[sel]
         if len(obj_pts) < min_pts_3d:
+            _reject("few_points_3d", area)
             continue
 
         z = obj_pts[:, 2]
@@ -505,6 +522,7 @@ def detect_scene_objects_2d(
         if z_arm is not None and max_z_behind > 0:
             keep_z &= obj_pts[:, 2] < (z_arm + max_z_behind)
         if np.count_nonzero(keep_z) < min_pts_3d:
+            _reject("depth_filter", area)
             continue
         obj_pts = obj_pts[keep_z]
         obj_col = obj_col[keep_z]

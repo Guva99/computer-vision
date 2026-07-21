@@ -242,7 +242,9 @@ class AppRunner:
                         "scenario_id": cfg.scenario_id,
                     }
                     if self.objects_log is not None:
-                        self.objects_log.log_frame(frame_count, result.objects)
+                        self.objects_log.log_frame(
+                            frame_count, result.objects, result.rejects
+                        )
                 self.perf.sample(frame_count, inst_fps, result.stage_times,
                                  decision=decision)
                 self._draw_perf(result.overlay)

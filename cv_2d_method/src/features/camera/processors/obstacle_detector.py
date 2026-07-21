@@ -48,11 +48,12 @@ class ObstacleDetector:
         depth_scale: float,
         gripper_height: Optional[float] = None,
         sheet_mask: Optional[np.ndarray] = None,
-        gripper_bbox: Optional[Tuple[int, int, int, int]] = None
+        gripper_bbox: Optional[Tuple[int, int, int, int]] = None,
+        reject_log: Optional[List[Dict]] = None
     ) -> List[Dict]:
         """
         Обнаруживает объекты на рабочей области и классифицирует их.
-        
+
         Args:
             color_image: Цветное изображение BGR
             depth_frame: Кадр глубины
@@ -60,28 +61,33 @@ class ObstacleDetector:
             gripper_height: Высота хвата (для сравнения)
             sheet_mask: Маска рабочей области (белый лист)
             gripper_bbox: Bounding box хвата (x, y, w, h) для исключения из поиска
-            
+            reject_log: (Задача 8) список для записей об отбракованных
+                кандидатах с причиной; на логику детекции не влияет
+
         Returns:
             Список объектов с информацией о них
         """
         if depth_frame is None:
             return []
-        
+
         height, width = color_image.shape[:2]
         depth_image = np.asanyarray(depth_frame.get_data())
-        
+
         # Определяем рабочую область
         if sheet_mask is None:
             sheet_mask = self._detect_work_area(color_image)
-        
+
         if sheet_mask is None:
+            if reject_log is not None:
+                reject_log.append({"reject_reason": "no_work_area"})
             return []
-        
+
         # Находим объекты на рабочей области
         objects = self._find_objects_on_sheet(
-            color_image, depth_image, depth_scale, sheet_mask, gripper_height, gripper_bbox
+            color_image, depth_image, depth_scale, sheet_mask, gripper_height,
+            gripper_bbox, reject_log
         )
-        
+
         return objects
     
     def _detect_work_area(self, color_image: np.ndarray) -> Optional[np.ndarray]:
@@ -120,11 +126,19 @@ class ObstacleDetector:
         depth_scale: float,
         sheet_mask: np.ndarray,
         gripper_height: Optional[float],
-        gripper_bbox: Optional[Tuple[int, int, int, int]] = None
+        gripper_bbox: Optional[Tuple[int, int, int, int]] = None,
+        reject_log: Optional[List[Dict]] = None
     ) -> List[Dict]:
         """Находит объекты на рабочей области."""
         height, width = color_image.shape[:2]
         objects = []
+
+        def _reject(reason: str, area_px) -> None:
+            # Сбор причин отбраковки (Задача 8); включается только когда
+            # передан reject_log — иначе ноль накладных расходов.
+            if reject_log is not None:
+                reject_log.append({"reject_reason": reason,
+                                   "area_px": int(area_px)})
         
         # Конвертируем в HSV
         hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
@@ -178,30 +192,35 @@ class ObstacleDetector:
         
         for contour in contours:
             area = cv2.contourArea(contour)
-            
+
             if area < self.min_object_area or area > self.max_object_area:
+                _reject("area_min" if area < self.min_object_area else "area_max",
+                        area)
                 continue
-            
+
             # Bounding box
             x, y, w, h = cv2.boundingRect(contour)
-            
+
             # === ФИЛЬТР ФОРМЫ - исключаем провода и тонкие объекты ===
             # Соотношение сторон
             aspect_ratio = float(w) / h if h > 0 else 0
             if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
+                _reject("shape_aspect", area)
                 continue  # Слишком тонкий/длинный объект (провод)
-            
+
             # Плотность объекта (solidity) - отношение площади к выпуклой оболочке
             hull = cv2.convexHull(contour)
             hull_area = cv2.contourArea(hull)
             solidity = area / hull_area if hull_area > 0 else 0
             if solidity < self.min_solidity:
+                _reject("shape_solidity", area)
                 continue  # Объект слишком "рваный" (провод изгибается)
-            
+
             # Компактность - провода имеют большой периметр относительно площади
             perimeter = cv2.arcLength(contour, True)
             circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
             if circularity < 0.1:
+                _reject("shape_circularity", area)
                 continue  # Слишком вытянутый объект
             
             # Центр объекта
@@ -225,14 +244,16 @@ class ObstacleDetector:
                 
                 # Если центр объекта глубоко внутри хвата - пропускаем
                 if inner_x1 < cx < inner_x2 and inner_y1 < cy < inner_y2:
+                    _reject("inside_gripper", area)
                     continue
-            
+
             # Вычисляем глубину (высоту) объекта
             obj_depth = self._calculate_object_depth(
                 depth_image, depth_scale, contour, x, y, w, h
             )
-            
+
             if obj_depth is None:
+                _reject("no_depth", area)
                 continue
             
             # Находим самую высокую точку (минимальная глубина)

@@ -107,6 +107,7 @@ class SystemController:
         self._gripper_log_counter = 0
         self._last_collision_state = False  # Для отслеживания изменения состояния
         self._frame_idx = 0  # сквозной номер кадра (для логов валидации)
+        self._last_rejects = None  # причины отбраковки кандидатов (Задача 8)
 
         # Покадровый лог решений (Задача 1); None при выключенном флаге
         self.perf_logger: Optional[PerfLogger2D] = None
@@ -389,7 +390,9 @@ class SystemController:
                     ),
                     "level": level,
                 })
-            self.perf_logger.log_objects(self._frame_idx, obj_rows)
+            self.perf_logger.log_objects(
+                self._frame_idx, obj_rows, self._last_rejects or ()
+            )
         
         # Опциональное окно облака точек (только визуализация, не детекция)
         if self.enable_point_cloud and self.point_cloud_window and self.depth_processor:
@@ -457,13 +460,17 @@ class SystemController:
             gripper_bbox = gripper_info.get('bbox')
         
         # === 2D ДЕТЕКЦИЯ ОБЪЕКТОВ ===
+        # reject_log (Задача 8): причины отбраковки кандидатов — только при
+        # включённом покадровом логе решений.
+        self._last_rejects = [] if self.perf_logger is not None else None
         detected_objects = self.obstacle_detector.detect_objects(
             color_image,
             depth_frame=depth_frame,
             depth_scale=depth_scale,
             gripper_height=gripper_height,
             sheet_mask=sheet_mask,
-            gripper_bbox=gripper_bbox
+            gripper_bbox=gripper_bbox,
+            reject_log=self._last_rejects
         )
         
         # === ПРОВЕРКА СТОЛКНОВЕНИЙ ===
