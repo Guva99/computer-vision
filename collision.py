@@ -129,6 +129,68 @@ def _filter_scene_by_depth(
     return pts[keep], col[keep]
 
 
+def fit_table_plane(
+    points: np.ndarray,
+    voxel_m: float = 0.02,
+    dist_thresh_m: float = 0.008,
+    min_inliers: int = 50,
+) -> Optional[np.ndarray]:
+    """RANSAC-плоскость стола в кадре камеры → (a,b,c,d), |n|=1.
+
+    Стол — доминирующая плоскость сцены; RANSAC её и находит. Нормаль
+    ориентируется так, чтобы объекты (ближе к камере, меньший z) имели
+    ПОЛОЖИТЕЛЬНУЮ высоту над плоскостью: height(p)=a·x+b·y+c·z+d > 0.
+    Возвращает None, если плоскость не найдена или это, вероятно, стена
+    (нормаль почти перпендикулярна лучу зрения, |c| мало).
+    """
+    if len(points) < min_inliers:
+        return None
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=np.float64))
+    cloud = cloud.voxel_down_sample(voxel_size=float(voxel_m))
+    if len(cloud.points) < 50:
+        return None
+    try:
+        model, inliers = cloud.segment_plane(
+            distance_threshold=float(dist_thresh_m),
+            ransac_n=3,
+            num_iterations=200,
+        )
+    except Exception:
+        return None
+    if len(inliers) < 50:
+        return None
+    a, b, c, d = (float(x) for x in model)
+    n = (a * a + b * b + c * c) ** 0.5
+    if n < 1e-9:
+        return None
+    a, b, c, d = a / n, b / n, c / n, d / n
+    # Ориентация: объекты ближе к камере (меньший z) → нужен c<0, тогда
+    # уменьшение z увеличивает height. Стол получает height≈0.
+    if c > 0:
+        a, b, c, d = -a, -b, -c, -d
+    # Санити: стол смотрит примерно на камеру (|c| большое). Стена/профиль
+    # ограждения (вертикаль) имеет |c|~0 — такую «плоскость» отвергаем.
+    if abs(c) < 0.5:
+        return None
+    return np.array([a, b, c, d], dtype=np.float64)
+
+
+def plane_height_2d(
+    points: np.ndarray,
+    valid_flat: np.ndarray,
+    plane: np.ndarray,
+    image_shape: Tuple[int, int],
+) -> np.ndarray:
+    """Карта высоты над плоскостью стола по пикселям (NaN вне valid), метры."""
+    h, w = int(image_shape[0]), int(image_shape[1])
+    height_flat = np.full(h * w, np.nan, dtype=np.float64)
+    a, b, c, d = (float(x) for x in plane)
+    hgt = a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d
+    height_flat[valid_flat] = hgt
+    return height_flat.reshape(h, w)
+
+
 # ── ADAPTIVE ε (ВАК §3, формулы 5–6) ──────────────────────────────────────
 # CLAUDE: чтобы убрать — удали функцию _estimate_adaptive_eps() ниже
 #   и блок "# [ADAPTIVE ε]" внутри detect_scene_objects().
@@ -286,6 +348,48 @@ def detect_scene_objects(
     return objects
 
 
+def build_gripper_capsule_mask(
+    spheres: List[LinkSphere],
+    intrinsics: Dict[str, float],
+    image_shape: Tuple[int, int],
+    pad_px: int = 8,
+    parts: Sequence[str] = ("gripper",),
+) -> np.ndarray:
+    """FK-капсула хвата, растеризованная в кадр (uint8, 0/255).
+
+    Тёмный металл лопатки не даёт валидной глубины, поэтому цвет/глубинная
+    маска руки его пропускает — и его блики/винты рождают ложные «объекты»
+    вплотную к руке (ложный DANGER). Геометрии FK глубина не нужна: сферы
+    сегмента J6→TCP проецируются в кадр кругами радиусом fx·r/z (+pad_px
+    запас на погрешность калибровки), соседние круги соединяются линией.
+    """
+    h, w = int(image_shape[0]), int(image_shape[1])
+    mask = np.zeros((h, w), dtype=np.uint8)
+    fx, fy = float(intrinsics["fx"]), float(intrinsics["fy"])
+    cx, cy = float(intrinsics["cx"]), float(intrinsics["cy"])
+    prev_uv: Optional[Tuple[int, int]] = None
+    prev_r = 0
+    for sp in spheres:
+        if sp.part not in parts:
+            continue
+        z = float(sp.center[2])
+        if z <= 1e-4:
+            prev_uv = None
+            continue
+        u = int(round(fx * float(sp.center[0]) / z + cx))
+        v = int(round(fy * float(sp.center[1]) / z + cy))
+        r_px = int(round(fx * float(sp.radius) / z)) + int(pad_px)
+        if r_px <= 0:
+            prev_uv = None
+            continue
+        cv2.circle(mask, (u, v), r_px, 255, -1)
+        if prev_uv is not None:
+            cv2.line(mask, prev_uv, (u, v), 255, thickness=max(1, min(r_px, prev_r) * 2))
+        prev_uv = (u, v)
+        prev_r = r_px
+    return mask
+
+
 def build_near_manip_ring_mask(
     manipulator_mask: np.ndarray,
     dilate_px: int,
@@ -329,6 +433,7 @@ def detect_scene_objects_2d(
     cfg,
     color_bgr: Optional[np.ndarray] = None,
     reject_log: Optional[list] = None,
+    table_plane: Optional[np.ndarray] = None,
 ) -> Tuple[List[SceneObject], np.ndarray]:
     """
     Detect scene objects from 2D valid-depth mask minus manipulator (like arm segmentation).
@@ -364,9 +469,38 @@ def detect_scene_objects_2d(
         manip_excl = cv2.dilate(manipulator_mask, k_ex, iterations=1)
     obj_mask = valid_2d & (manip_excl == 0)
 
-    # Colour/brightness gate: keep only contrasting objects, drop the dark table.
+    # ── Гейт кандидатов ─────────────────────────────────────────────────────
+    # ОСНОВНОЙ критерий — ГЕОМЕТРИЯ: высота над плоскостью стола. Кубик от стола
+    # отличает не цвет (дерево/тёмный не проходят цвет-гейт), а то, что он ВЫШЕ
+    # стола на 1.5–30 см. Не зависит от цвета, освещения и калибровки T_cr.
+    # Цветовой гейт остаётся запасным (когда плоскость не найдена).
     contrast: Optional[np.ndarray] = None
-    if (
+    plane_gate_on = (
+        table_plane is not None
+        and bool(getattr(cfg, "collision_obj_plane_gate", True))
+    )
+    if plane_gate_on:
+        height2d = plane_height_2d(points, valid_flat, table_plane, (h, w))
+        h_min = float(getattr(cfg, "collision_obj_plane_height_min_m", 0.015))
+        h_max = float(getattr(cfg, "collision_obj_plane_height_max_m", 0.30))
+        # NaN-сравнения дают False → пиксели без глубины отсекаются автоматически.
+        plane_mask = (height2d >= h_min) & (height2d <= h_max)
+        obj_mask = obj_mask & plane_mask
+        contrast = plane_mask  # база для reclaim ниже
+        # Синий пневмошланг руки (если пробился) убираем и здесь.
+        if (
+            color_bgr is not None
+            and bool(getattr(cfg, "collision_obj_exclude_blue", True))
+            and color_bgr.shape[:2] == (h, w)
+        ):
+            hsv = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
+            hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+            hue_lo = int(getattr(cfg, "collision_obj_blue_hue_lo", 90))
+            hue_hi = int(getattr(cfg, "collision_obj_blue_hue_hi", 140))
+            is_blue = (hue >= hue_lo) & (hue <= hue_hi) & (sat >= 60)
+            obj_mask = obj_mask & (~is_blue)
+            contrast = contrast & (~is_blue)
+    elif (
         color_bgr is not None
         and bool(getattr(cfg, "collision_obj_color_gate", True))
         and color_bgr.shape[:2] == (h, w)
