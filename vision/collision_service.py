@@ -26,6 +26,7 @@ class CollisionFrame:
     results: list = field(default_factory=list)
     worst_level: str = "SAFE"
     worst_focus: object = None
+    table_roi: Optional[tuple] = None  # ROI рабочей зоны (px) для отрисовки границы
 
 
 class CollisionService:
@@ -198,6 +199,15 @@ class CollisionService:
                 )
         return confirmed
 
+    @staticmethod
+    def _obj_area(obj):
+        """Мера «полноты» наблюдения: площадь 2D-бокса (px), иначе число точек."""
+        bb = getattr(obj, "bbox_2d", None)
+        if bb is not None:
+            return float(int(bb[2]) * int(bb[3]))
+        pts = getattr(obj, "points", None)
+        return float(len(pts)) if pts is not None else 0.0
+
     def _update_permanence(self, observations, occ_mask, points, valid_flat,
                            intrinsics, image_shape):
         """Object permanence: держать подтверждённые объекты в ПАМЯТИ (координаты
@@ -217,6 +227,7 @@ class CollisionService:
         clear_frames = int(getattr(cfg, "collision_perm_clear_frames", 10))
         win = int(getattr(cfg, "collision_perm_window_px", 9))
         occ_frac = float(getattr(cfg, "collision_perm_occ_frac", 0.4))
+        keep_fullest = bool(getattr(cfg, "collision_perm_keep_fullest", True))
         h, w = int(image_shape[0]), int(image_shape[1])
         fx = float(intrinsics["fx"]); fy = float(intrinsics["fy"])
         cx = float(intrinsics["cx"]); cy = float(intrinsics["cy"])
@@ -234,10 +245,28 @@ class CollisionService:
                     best_d, best_i = d, i
             if best_i >= 0:
                 k = self._known[best_i]
-                k["obj"] = obj; k["centroid"] = c; k["empty"] = 0
+                if not keep_fullest:
+                    k["obj"] = obj; k["centroid"] = c
+                else:
+                    # Держим САМЫЙ ПОЛНЫЙ бокс: рука отъедает ближнюю сторону →
+                    # усадка. Обновляем, только если новый не меньше сохранённого;
+                    # иначе держим полный (рамка стабильна, дистанция по ближней
+                    # грани). Медленный decay принимает стойко уменьшившийся объект.
+                    new_area = self._obj_area(obj)
+                    if new_area >= k.get("area", 0.0):
+                        k["obj"] = obj; k["area"] = new_area; k["centroid"] = c
+                    else:
+                        k["area"] = k.get("area", new_area) * 0.98 + new_area * 0.02
+                        if new_area >= k["area"]:
+                            k["obj"] = obj; k["centroid"] = c
+                        # иначе — сохраняем полный obj И его центроид (без дрейфа)
+                k["empty"] = 0
                 used.add(best_i)
             else:
-                self._known.append({"obj": obj, "centroid": c, "empty": 0})
+                self._known.append({
+                    "obj": obj, "centroid": c, "empty": 0,
+                    "area": self._obj_area(obj),
+                })
                 used.add(len(self._known) - 1)
 
         # 2) несопоставленные известные: держать под рукой, удалять по пустому столу
@@ -302,6 +331,7 @@ class CollisionService:
             scene_obj_mask_2d=np.zeros(color_bgr.shape[:2], dtype=np.uint8),
             scene_objects_mask=np.zeros(color_bgr.shape[:2], dtype=np.uint8),
         )
+        cf.table_roi = self._table_roi  # граница рабочей зоны для оверлея
         if not (
             cfg.enable_collision
             and len(points) > 0

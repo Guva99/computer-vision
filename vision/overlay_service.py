@@ -159,6 +159,14 @@ class OverlayRenderer:
                 1,
             )
             if cfg.show_collision_overlay:
+                # Граница рабочей зоны ROI: всё вне неё в детекцию не идёт —
+                # видно, какой объект внутри зоны, а какой отсекается краем.
+                roi = getattr(cf, "table_roi", None)
+                if roi:
+                    rx0, ry0, rx1, ry1 = (int(v) for v in roi)
+                    cv2.rectangle(overlay, (rx0, ry0), (rx1, ry1), (255, 255, 0), 1)
+                    cv2.putText(overlay, "WORK ZONE", (rx0 + 3, ry0 + 14),
+                                _FONT, 0.4, (255, 255, 0), 1)
                 # (серый контур кольца-зоны убран — мешал виду)
                 for obj in cf.scene_objects:
                     res = next(
