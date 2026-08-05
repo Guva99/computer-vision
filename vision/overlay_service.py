@@ -167,12 +167,19 @@ class OverlayRenderer:
                     level = res.level if res is not None else "SAFE"
                     part = res.part if res is not None else "--"
                     dist_m = res.min_dist_m if res is not None else float("inf")
-                    rect = collision_mod.project_aabb_to_image(
-                        obj.aabb_min, obj.aabb_max, intrinsics, color_shape
-                    )
+                    # Тугой 2D-bbox компоненты (если есть) точнее проекции 3D-AABB:
+                    # нет глубинной инфляции и смещения. Фолбэк — проекция AABB.
+                    rect = getattr(obj, "bbox_2d", None)
+                    if rect is None:
+                        rect = collision_mod.project_aabb_to_image(
+                            obj.aabb_min, obj.aabb_max, intrinsics, color_shape
+                        )
                     if rect is None:
                         continue
                     label = f"#{obj.obj_id} {part} {dist_m:.2f}m"
+                    _h = getattr(obj, "height_above_table_m", float("nan"))
+                    if _h == _h:  # not NaN — высота над столом для диагностики фантомов
+                        label += f" h{_h * 100:.0f}"
                     collision_mod.draw_object_box(overlay, rect, level, label=label)
 
     def build_debug_mosaic(self, color_bgr, depth, depth_scale, masks, gripper_debug, cf):

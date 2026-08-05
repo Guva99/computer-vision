@@ -40,6 +40,12 @@ class SceneObject:
     # блоб прилип к маске руки + разница его глубины с локальной глубиной руки.
     touches_arm: bool = False
     arm_depth_delta_m: float = float("inf")
+    # Медианная высота объекта над калиброванной плоскостью стола (м), NaN если
+    # плоскость не задана. Для оценки «реальности» угрозы и отладки.
+    height_above_table_m: float = float("nan")
+    # Тугой 2D-bbox самой компоненты в пикселях (x, y, w, h) — для рисования
+    # аккуратного бокса на RGB без инфляции от проекции 3D-AABB. None у 3D-ветки.
+    bbox_2d: Optional[Tuple[int, int, int, int]] = None
 
 
 @dataclass
@@ -364,6 +370,127 @@ def build_near_manip_ring_mask(
     return out
 
 
+def _dilate_mask_in_bbox(
+    mask_bool: np.ndarray, x0: int, y0: int, bw: int, bh: int, ksize: int, pad: int
+) -> np.ndarray:
+    """Дилатация bool-маски ТОЛЬКО в окне bbox+pad.
+
+    Компонента ненулевая лишь внутри своего bbox, поэтому дилатацию достаточно
+    считать в маленьком окне вокруг него — результат идентичен полнокадровой
+    дилатации, но в разы дешевле (полнокадровое ядро 57–67px × ~15 компонент
+    съедало 150–400 мс/кадр). `pad` должен покрывать и разрастание самой
+    компоненты, и радиус ядра.
+    """
+    h, w = mask_bool.shape
+    ax0 = max(0, x0 - pad); ay0 = max(0, y0 - pad)
+    ax1 = min(w, x0 + bw + pad); ay1 = min(h, y0 + bh + pad)
+    out = np.zeros_like(mask_bool)
+    if ax1 <= ax0 or ay1 <= ay0:
+        return out
+    sub = mask_bool[ay0:ay1, ax0:ax1].astype(np.uint8)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+    out[ay0:ay1, ax0:ax1] = cv2.dilate(sub, k) > 0
+    return out
+
+
+def _voxel_down_np(pts: np.ndarray, voxel_m: float) -> np.ndarray:
+    """Быстрый воксель-даунсэмпл (numpy): один реальный представитель на воксель.
+
+    Для дистанции сохраняет РЕАЛЬНУЮ точку (не усреднённую), ошибка <= размера
+    вокселя. Без создания o3d-облака на каждый объект (дорого в цикле).
+    """
+    if len(pts) == 0 or voxel_m <= 0.0:
+        return pts
+    keys = np.floor(np.asarray(pts) / voxel_m).astype(np.int64)
+    _, idx = np.unique(keys, axis=0, return_index=True)
+    return pts[idx]
+
+
+def _box_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> Tuple[float, float]:
+    """(IoU, containment=inter/min_area) двух 2D-боксов (x, y, w, h)."""
+    ax0, ay0, aw, ah = a; bx0, by0, bw, bh = b
+    ax1, ay1 = ax0 + aw, ay0 + ah; bx1, by1 = bx0 + bw, by0 + bh
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0, 0.0
+    area_a, area_b = aw * ah, bw * bh
+    union = area_a + area_b - inter
+    iou = inter / union if union > 0 else 0.0
+    cont = inter / min(area_a, area_b) if min(area_a, area_b) > 0 else 0.0
+    return iou, cont
+
+
+def _merge_overlapping_objects(
+    objects: List["SceneObject"], iou_thresh: float, contain_thresh: float
+) -> List["SceneObject"]:
+    """Слить объекты с перекрывающимися 2D-боксами (фрагменты одного кубика).
+
+    Объединяет точки/цвета, пересчитывает центроид/AABB/bbox_2d, признаки протечки
+    берёт консервативно (touches_arm=any, arm_depth_delta=min). Слияние точек лишь
+    уточняет дистанцию (ближайшая точка сохраняется), поэтому безопасно.
+    """
+    n = len(objects)
+    if n < 2:
+        return objects
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    boxes = [o.bbox_2d for o in objects]
+    for i in range(n):
+        if boxes[i] is None:
+            continue
+        for j in range(i + 1, n):
+            if boxes[j] is None:
+                continue
+            iou, cont = _box_overlap(boxes[i], boxes[j])
+            if iou >= iou_thresh or cont >= contain_thresh:
+                parent[find(i)] = find(j)
+
+    groups: Dict[int, List[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    if len(groups) == n:
+        return objects  # нечего сливать
+
+    merged: List["SceneObject"] = []
+    for k, idxs in enumerate(groups.values()):
+        if len(idxs) == 1:
+            o = objects[idxs[0]]
+            o.obj_id = k
+            merged.append(o)
+            continue
+        pts = np.vstack([objects[t].points for t in idxs])
+        cols = np.vstack([objects[t].colors for t in idxs])
+        xs = [objects[t].bbox_2d[0] for t in idxs if objects[t].bbox_2d is not None]
+        ys = [objects[t].bbox_2d[1] for t in idxs if objects[t].bbox_2d is not None]
+        xe = [objects[t].bbox_2d[0] + objects[t].bbox_2d[2] for t in idxs if objects[t].bbox_2d is not None]
+        ye = [objects[t].bbox_2d[1] + objects[t].bbox_2d[3] for t in idxs if objects[t].bbox_2d is not None]
+        bbox = (min(xs), min(ys), max(xe) - min(xs), max(ye) - min(ys)) if xs else None
+        heights = [objects[t].height_above_table_m for t in idxs]
+        h_val = float(np.nanmax(heights)) if np.any(np.isfinite(heights)) else float("nan")
+        merged.append(SceneObject(
+            obj_id=k,
+            points=pts,
+            colors=cols,
+            centroid=pts.mean(axis=0),
+            aabb_min=pts.min(axis=0),
+            aabb_max=pts.max(axis=0),
+            touches_arm=any(objects[t].touches_arm for t in idxs),
+            arm_depth_delta_m=min(objects[t].arm_depth_delta_m for t in idxs),
+            height_above_table_m=h_val,
+            bbox_2d=bbox,
+        ))
+    return merged
+
+
 def detect_scene_objects_2d(
     points: np.ndarray,
     colors: np.ndarray,
@@ -373,6 +500,7 @@ def detect_scene_objects_2d(
     cfg,
     color_bgr: Optional[np.ndarray] = None,
     table_plane: Optional[np.ndarray] = None,
+    roi_rect: Optional[Tuple[int, int, int, int]] = None,
 ) -> Tuple[List[SceneObject], np.ndarray]:
     """
     Detect scene objects from 2D valid-depth mask minus manipulator (like arm segmentation).
@@ -421,6 +549,21 @@ def detect_scene_objects_2d(
         hmin = float(getattr(cfg, "collision_obj_plane_height_min_m", 0.025))
         hmax = float(getattr(cfg, "collision_obj_plane_height_max_m", 0.30))
         contrast = (h_img >= hmin) & (h_img <= hmax)
+        # Вычесть известный синий пневмошланг робота: он выше стола (проходит
+        # высотный гейт), но это деталь робота, а не объект. Это НЕ детекция по
+        # цвету — а удаление заведомо известной детали.
+        if (
+            color_bgr is not None
+            and bool(getattr(cfg, "collision_obj_exclude_blue", True))
+            and color_bgr.shape[:2] == (h, w)
+        ):
+            hsv_b = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
+            hue_b, sat_b = hsv_b[:, :, 0], hsv_b[:, :, 1]
+            hue_lo = int(getattr(cfg, "collision_obj_blue_hue_lo", 90))
+            hue_hi = int(getattr(cfg, "collision_obj_blue_hue_hi", 140))
+            sat_min = int(getattr(cfg, "collision_obj_sat_min", 60))
+            is_blue = (hue_b >= hue_lo) & (hue_b <= hue_hi) & (sat_b >= sat_min)
+            contrast = contrast & (~is_blue)
         obj_mask = obj_mask & contrast
     elif (
         color_bgr is not None
@@ -447,11 +590,26 @@ def detect_scene_objects_2d(
     # для измерения дистанции найденной компоненте возвращаются её пиксели,
     # съеденные зоной, — иначе расстояние завышено на ширину зоны (~3 см) и
     # DANGER не наступает при подходе руки.
+    # ROI рабочей зоны (пиксельный прямоугольник калиброванного стола): камера
+    # неподвижна → зона фиксирована и НЕ зависит от T_cr. Всё вне ROI (провод,
+    # база робота, фон за столом, дальние выбросы) в детекцию не попадает.
+    roi_bool: Optional[np.ndarray] = None
+    if roi_rect is not None:
+        rx0, ry0, rx1, ry1 = (int(v) for v in roi_rect)
+        rx0 = max(0, min(rx0, w)); rx1 = max(0, min(rx1, w))
+        ry0 = max(0, min(ry0, h)); ry1 = max(0, min(ry1, h))
+        if rx1 > rx0 and ry1 > ry0:
+            roi_bool = np.zeros((h, w), dtype=bool)
+            roi_bool[ry0:ry1, rx0:rx1] = True
+            obj_mask = obj_mask & roi_bool
+
     reclaim_base: Optional[np.ndarray] = None
     if bool(getattr(cfg, "collision_obj_reclaim_near_arm", True)) and ex_px > 0:
         reclaim_base = valid_2d & (manipulator_mask == 0)
         if contrast is not None:
             reclaim_base = reclaim_base & contrast
+        if roi_bool is not None:
+            reclaim_base = reclaim_base & roi_bool
 
     obj_mask_u8 = (obj_mask.astype(np.uint8) * 255)
 
@@ -540,10 +698,9 @@ def detect_scene_objects_2d(
         # проверялись по усечённой компоненте, а 3D-точки для дистанции берём
         # из полной — ближайший к руке край объекта снова участвует в метрике.
         if reclaim_base is not None:
-            k_rc = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, (2 * ex_px + 1, 2 * ex_px + 1)
+            comp_dil = _dilate_mask_in_bbox(
+                comp, x0, y0, bw, bh, 2 * ex_px + 1, ex_px + 1
             )
-            comp_dil = cv2.dilate(comp.astype(np.uint8), k_rc) > 0
             comp = comp | (comp_dil & reclaim_base)
         # Erode the component before sampling 3D points: boundary pixels carry
         # mixed depth (object vs table/arm) and would corrupt the distance.
@@ -572,6 +729,15 @@ def detect_scene_objects_2d(
             continue
         obj_pts = obj_pts[keep_z]
         obj_col = obj_col[keep_z]
+        # Прореживание точек объекта для быстрой дистанции: полный пиксельный
+        # кластер — тысячи точек, min_dist O(N·K) на кадр дорог. Воксель 1 см даёт
+        # ошибку дистанции <= 1 см (порог DANGER 8 см) и консистентен с body 2 см.
+        dist_voxel = float(getattr(cfg, "collision_obj_dist_voxel_m", 0.01))
+        if dist_voxel > 0.0 and len(obj_pts) > min_pts_3d:
+            obj_pts_ds = _voxel_down_np(obj_pts, dist_voxel)
+            if len(obj_pts_ds) >= min_pts_3d:
+                obj_pts = obj_pts_ds
+                obj_col = np.zeros((len(obj_pts_ds), obj_col.shape[1]), dtype=obj_col.dtype)
 
         # Признаки протечки руки: прилип ли блоб к маске руки и совпадает ли
         # его глубина с локальной глубиной руки рядом. Решение об отбраковке
@@ -581,12 +747,9 @@ def detect_scene_objects_2d(
         arm_depth_delta = float("inf")
         if np.count_nonzero(manipulator_mask) > 0:
             t_px = ex_px + 5
-            k_t = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, (2 * t_px + 1, 2 * t_px + 1)
-            )
-            near_arm = (cv2.dilate(comp.astype(np.uint8), k_t) > 0) & (
-                manipulator_mask > 0
-            )
+            near_arm = _dilate_mask_in_bbox(
+                comp, x0, y0, bw, bh, 2 * t_px + 1, ex_px + t_px + 1
+            ) & (manipulator_mask > 0)
             touches_arm = bool(np.any(near_arm))
             if touches_arm and z_img is not None:
                 z_vals = z_img[near_arm]
@@ -598,6 +761,21 @@ def detect_scene_objects_2d(
 
         aabb_min = obj_pts.min(axis=0)
         aabb_max = obj_pts.max(axis=0)
+        obj_height = float("nan")
+        if use_plane:
+            hgt = obj_pts[:, 0] * a + obj_pts[:, 1] * b + obj_pts[:, 2] * c + d
+            obj_height = float(np.median(hgt))
+            # Гейт вертикальной структуры против фантомов на пустом столе
+            # (ДРЕЙФ-НЕЗАВИСИМ): у реального кубика точки тянутся по высоте (видны
+            # верхняя грань + боковые), размах p90−p10 большой; у плоского шума
+            # или дрейфа плоскости все точки на ~одном уровне → размах мал.
+            # Абсолютный порог высоты тут не годится: при дрейфе плоскости шум
+            # «поднимается» и проходит, а размах остаётся малым.
+            min_span = float(getattr(cfg, "collision_obj_plane_min_span_m", 0.015))
+            if min_span > 0.0 and len(hgt) >= 5:
+                span = float(np.percentile(hgt, 90) - np.percentile(hgt, 10))
+                if span < min_span:
+                    continue
         objects.append(
             SceneObject(
                 obj_id=obj_id,
@@ -608,10 +786,16 @@ def detect_scene_objects_2d(
                 aabb_max=aabb_max,
                 touches_arm=touches_arm,
                 arm_depth_delta_m=arm_depth_delta,
+                height_above_table_m=obj_height,
+                bbox_2d=(x0, y0, bw, bh),
             )
         )
         obj_id += 1
         n_kept += 1
+
+    # Склейка перекрывающихся боксов вынесена ПОСЛЕ трекера (collision_service):
+    # там дедуп ловит и фрагменты детекции, и призраков-коастинг трекера, и не
+    # дёргает центроид детекции (иначе плодятся дубли-треки).
 
     _dbg2d_call_count += 1
     if _dbg2d_call_count % 60 == 1:

@@ -39,11 +39,27 @@ class CollisionService:
         self._bbox_geoms: list = []
         self._tracks: list = []  # временная устойчивость объектов (анти-мигание протечек руки)
         self._danger_hold = False  # гистерезис DANGER (анти-дребезг на границе порога)
+        self._danger_lost = 0      # счётчик кадров удержания DANGER после пропажи объекта
         self._T_rc = None  # кэш inv(T_cr) для workspace-фильтра (база ← камера)
         self._ws_dbg_count = 0  # троттлинг диагностики workspace-фильтра
         # Калиброванная плоскость стола (кадр камеры) для высотного гейта детекции.
         # Мерится один раз (calibrate_table_plane.py), не зависит от T_cr.
+        self._table_roi = None  # ROI рабочей зоны (x0,y0,x1,y1 px), заполнит загрузчик
         self._table_plane = self._load_table_plane()
+        self._resolve_table_roi()
+
+    def _resolve_table_roi(self):
+        """ROI рабочей зоны в пикселях: из table_plane.json (roi_px) или конфига.
+        Вне ROI (провод, база робота, фон) детекция не идёт. Камера неподвижна →
+        зона фиксирована, от T_cr не зависит."""
+        if not bool(getattr(self.cfg, "collision_obj_roi_gate", False)):
+            self._table_roi = None
+            return
+        # json-ROI из калибровки имеет приоритет; иначе — дефолт из конфига.
+        if self._table_roi is None:
+            self._table_roi = tuple(getattr(self.cfg, "collision_obj_roi_px", ()))
+        if self._table_roi:
+            print(f"[COLLISION] ROI рабочей зоны (px): {tuple(self._table_roi)}")
 
     def _load_table_plane(self):
         """Загрузить (a,b,c,d) из table_plane.json или None (→ фолбэк на цвет)."""
@@ -62,6 +78,9 @@ class CollisionService:
                 self.cfg.collision_obj_plane_height_min_m = float(data["gate_min_m"])
             if "gate_max_m" in data:
                 self.cfg.collision_obj_plane_height_max_m = float(data["gate_max_m"])
+            # ROI рабочей зоны из калибровки (приоритет над дефолтом конфига).
+            if "roi_px" in data and data["roi_px"]:
+                self._table_roi = tuple(int(v) for v in data["roi_px"][:4])
             print(f"[COLLISION] Плоскость стола загружена: n=({plane[0]:+.2f},"
                   f"{plane[1]:+.2f},{plane[2]:+.2f}) d={plane[3]:+.3f}, гейт "
                   f"{self.cfg.collision_obj_plane_height_min_m*100:.1f}.."
@@ -128,9 +147,15 @@ class CollisionService:
         for i, t in enumerate(self._tracks):
             if i not in used:
                 t["miss"] += 1
-        self._tracks = [t for t in self._tracks if t["miss"] <= cfg.collision_track_max_miss]
-
+        # Подтверждённый трек (стабильный объект) coast-ится дольше кандидата:
+        # рука, перекрывшая башню на несколько кадров, не должна её «убивать».
         need = int(cfg.collision_persist_frames)
+        max_miss = int(cfg.collision_track_max_miss)
+        max_miss_conf = int(getattr(cfg, "collision_track_max_miss_confirmed", 15))
+        self._tracks = [
+            t for t in self._tracks
+            if t["miss"] <= (max_miss_conf if t["hits"] >= need else max_miss)
+        ]
         need_near = int(getattr(cfg, "collision_persist_frames_near", 2))
         warn_m = float(cfg.collision_warn_dist_m)
         confirmed = []
@@ -201,6 +226,7 @@ class CollisionService:
                 cfg,
                 color_bgr=color_bgr,
                 table_plane=self._table_plane,
+                roi_rect=self._table_roi,
             )
         else:
             _, (scene_pts, scene_col) = split_cloud_by_mask(
@@ -256,12 +282,50 @@ class CollisionService:
                 body_mask = eroded_arm
         manip_sel = (body_mask > 0).reshape(-1)[valid_flat]
         manip_pts = points[manip_sel] if np.any(manip_sel) else points[:0]
+        # Очистка облака руки от ЦВЕТНЫХ протечек: реальная рука KUKA белая/серая
+        # (низкая насыщенность), а яркий кубик (жёлтый/зелёный/дерево) частично
+        # проходит порог белого сегментатора → его пиксели попадают в облако тела
+        # → «до руки» ≈ 0 → ложный DANGER «arm» на кубике вдали от руки. Выкидываем
+        # насыщенные пиксели из тела (T_cr-независимо, реальную руку не трогает).
+        if (
+            bool(getattr(cfg, "collision_body_color_clean", True))
+            and color_bgr is not None
+            and np.any(manip_sel)
+        ):
+            sat = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)[:, :, 1]
+            sat_manip = sat.reshape(-1)[valid_flat][manip_sel]
+            sat_max = int(getattr(cfg, "collision_body_sat_max", 70))
+            keep_desat = sat_manip < sat_max
+            if np.count_nonzero(keep_desat) > 20:
+                manip_pts = manip_pts[keep_desat]
+        # Очистка облака руки от протечек маски на стол по калиброванной плоскости:
+        # реальная рука выше стола; точки на уровне стола рядом с рукой — протечки,
+        # дающие фантомную близость к столовым объектам (ложный DANGER «arm»).
+        if (
+            self._table_plane is not None
+            and len(manip_pts) > 0
+            and bool(getattr(cfg, "collision_body_plane_clean", True))
+        ):
+            pa, pb, pc, pd = (float(v) for v in np.asarray(self._table_plane).ravel()[:4])
+            body_h = manip_pts[:, 0] * pa + manip_pts[:, 1] * pb + manip_pts[:, 2] * pc + pd
+            keep_body = body_h > float(getattr(cfg, "collision_body_plane_min_height_m", 0.03))
+            if np.count_nonzero(keep_body) > 20:
+                manip_pts = manip_pts[keep_body]
         body_ds = collision_mod._voxel_down(manip_pts, cfg.collision_body_voxel_m)
         # Фильтр устойчивости: отсечь мигающие протечки руки, оставить стабильные.
         # body_ds/gripper_spheres нужны для fast-path (кандидат уже в WARN-зоне).
         if cfg.collision_persist_frames > 1:
             cf.scene_objects = self._confirm_objects(
                 cf.scene_objects, body_ds, gripper_spheres
+            )
+        # Дедуп финальных объектов: слить перекрывающиеся боксы (фрагменты кубика
+        # + призраки-коастинг трекера на старом месте). После трекера, чтобы
+        # ловить оба источника дублей. Слияние точек лишь уточняет дистанцию.
+        if bool(getattr(cfg, "collision_obj_merge_overlap", True)) and len(cf.scene_objects) > 1:
+            cf.scene_objects = collision_mod._merge_overlapping_objects(
+                cf.scene_objects,
+                float(getattr(cfg, "collision_obj_merge_iou", 0.15)),
+                float(getattr(cfg, "collision_obj_merge_contain", 0.4)),
             )
         # Растеризация точек объектов нужна только для debug-мозаики
         # (Python-цикл по точкам — дорого). Строим лишь когда показываем debug.
@@ -288,12 +352,26 @@ class CollisionService:
         # дистанция превысит danger_exit_dist_m — раньше срабатывает и не дребезжит.
         if cf.worst_level == "DANGER":
             self._danger_hold = True
+            self._danger_lost = 0
         elif self._danger_hold:
             d_min = min((r.min_dist_m for r in cf.results), default=float("inf"))
-            if d_min <= float(getattr(cfg, "collision_danger_exit_dist_m", 0.10)):
-                cf.worst_level = "DANGER"
+            if np.isfinite(d_min):
+                if d_min <= float(getattr(cfg, "collision_danger_exit_dist_m", 0.10)):
+                    cf.worst_level = "DANGER"
+                    self._danger_lost = 0
+                else:
+                    self._danger_hold = False
+                    self._danger_lost = 0
             else:
-                self._danger_hold = False
+                # Опасный объект ПРОПАЛ (мигание/перекрытие рукой), а не отъехал:
+                # держим DANGER ещё N кадров — робот не рвётся к «исчезнувшей» башне.
+                lost_hold = int(getattr(cfg, "collision_danger_lost_hold_frames", 5))
+                self._danger_lost += 1
+                if self._danger_lost <= lost_hold:
+                    cf.worst_level = "DANGER"
+                else:
+                    self._danger_hold = False
+                    self._danger_lost = 0
         if self.logger is not None:
             self.logger.update(
                 frame_count, cf.worst_level, cf.worst_focus
