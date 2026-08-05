@@ -286,6 +286,50 @@ def detect_scene_objects(
     return objects
 
 
+def build_gripper_capsule_mask(
+    spheres: List[LinkSphere],
+    intrinsics: Dict[str, float],
+    image_shape: Tuple[int, int],
+    pad_px: int = 8,
+    parts: Sequence[str] = ("gripper",),
+) -> np.ndarray:
+    """FK-капсула руки, растеризованная в кадр (uint8, 0/255).
+
+    Тёмный металл запястья/хвата и синий шланг не дают валидной глубины, поэтому
+    глубинная маска руки их пропускает — а высотный гейт (они выше стола) делает
+    из них ложные «объекты» вплотную к руке (ложный DANGER). Геометрии FK глубина
+    не нужна: сферы выбранных сегментов (`parts`) проецируются в кадр кругами
+    радиусом fx·r/z (+pad_px запас на погрешность калибровки), соседние круги
+    соединяются линией → сплошная «колбаса» поверх руки.
+    """
+    h, w = int(image_shape[0]), int(image_shape[1])
+    mask = np.zeros((h, w), dtype=np.uint8)
+    fx, fy = float(intrinsics["fx"]), float(intrinsics["fy"])
+    cx, cy = float(intrinsics["cx"]), float(intrinsics["cy"])
+    prev_uv: Optional[Tuple[int, int]] = None
+    prev_r = 0
+    for sp in spheres:
+        if sp.part not in parts:
+            prev_uv = None
+            continue
+        z = float(sp.center[2])
+        if z <= 1e-4:
+            prev_uv = None
+            continue
+        u = int(round(fx * float(sp.center[0]) / z + cx))
+        v = int(round(fy * float(sp.center[1]) / z + cy))
+        r_px = int(round(fx * float(sp.radius) / z)) + int(pad_px)
+        if r_px <= 0:
+            prev_uv = None
+            continue
+        cv2.circle(mask, (u, v), r_px, 255, -1)
+        if prev_uv is not None:
+            cv2.line(mask, prev_uv, (u, v), 255, thickness=max(1, min(r_px, prev_r) * 2))
+        prev_uv = (u, v)
+        prev_r = r_px
+    return mask
+
+
 def build_near_manip_ring_mask(
     manipulator_mask: np.ndarray,
     dilate_px: int,
@@ -328,6 +372,7 @@ def detect_scene_objects_2d(
     image_shape: Tuple[int, int],
     cfg,
     color_bgr: Optional[np.ndarray] = None,
+    table_plane: Optional[np.ndarray] = None,
 ) -> Tuple[List[SceneObject], np.ndarray]:
     """
     Detect scene objects from 2D valid-depth mask minus manipulator (like arm segmentation).
@@ -358,9 +403,26 @@ def detect_scene_objects_2d(
         manip_excl = cv2.dilate(manipulator_mask, k_ex, iterations=1)
     obj_mask = valid_2d & (manip_excl == 0)
 
-    # Colour/brightness gate: keep only contrasting objects, drop the dark table.
+    # Гейт кандидатов — что считать «объектом». Приоритет: ГЕОМЕТРИЯ (высота над
+    # калиброванной плоскостью стола, цвето-независимо). Цвет-гейт — фолбэк, если
+    # плоскость не задана. `contrast` — итоговая маска «пиксель может быть
+    # объектом»; используется ниже в reclaim-базе (обе ветки её заполняют).
     contrast: Optional[np.ndarray] = None
-    if (
+    use_plane = (
+        table_plane is not None
+        and bool(getattr(cfg, "collision_obj_plane_gate", False))
+    )
+    if use_plane:
+        a, b, c, d = (float(v) for v in np.asarray(table_plane).ravel()[:4])
+        height = points[:, 0] * a + points[:, 1] * b + points[:, 2] * c + d
+        h_img = np.full(h * w, -np.inf, dtype=np.float32)
+        h_img[valid_flat] = height.astype(np.float32)
+        h_img = h_img.reshape(h, w)
+        hmin = float(getattr(cfg, "collision_obj_plane_height_min_m", 0.025))
+        hmax = float(getattr(cfg, "collision_obj_plane_height_max_m", 0.30))
+        contrast = (h_img >= hmin) & (h_img <= hmax)
+        obj_mask = obj_mask & contrast
+    elif (
         color_bgr is not None
         and bool(getattr(cfg, "collision_obj_color_gate", True))
         and color_bgr.shape[:2] == (h, w)
@@ -406,7 +468,9 @@ def detect_scene_objects_2d(
         )
         obj_mask_u8 = cv2.morphologyEx(obj_mask_u8, cv2.MORPH_CLOSE, k_close)
 
-    use_near = bool(getattr(cfg, "collision_obj_use_near_manip", True))
+    # Кольцо near_manip нужно только в цвет-режиме (ограничить поиск зоной у руки).
+    # В плоскостном режиме детекция идёт по всему столу — кольцо выключаем.
+    use_near = bool(getattr(cfg, "collision_obj_use_near_manip", True)) and not use_plane
     if use_near and np.count_nonzero(manipulator_mask) > 0:
         ring_px = int(getattr(cfg, "collision_obj_near_manip_dilate_px", 130))
         near_ring = build_near_manip_ring_mask(manipulator_mask, ring_px)

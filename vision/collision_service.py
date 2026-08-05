@@ -5,7 +5,9 @@ Hybrid-схема: расстояние тела руки берётся из и
 (без зависимости от T_cr), хват — из FK-сфер (тёмный металл не даёт глубины).
 Ведёт журнал и управляет AABB-боксами в окне Open3D.
 """
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -39,6 +41,35 @@ class CollisionService:
         self._danger_hold = False  # гистерезис DANGER (анти-дребезг на границе порога)
         self._T_rc = None  # кэш inv(T_cr) для workspace-фильтра (база ← камера)
         self._ws_dbg_count = 0  # троттлинг диагностики workspace-фильтра
+        # Калиброванная плоскость стола (кадр камеры) для высотного гейта детекции.
+        # Мерится один раз (calibrate_table_plane.py), не зависит от T_cr.
+        self._table_plane = self._load_table_plane()
+
+    def _load_table_plane(self):
+        """Загрузить (a,b,c,d) из table_plane.json или None (→ фолбэк на цвет)."""
+        if not bool(getattr(self.cfg, "collision_obj_plane_gate", False)):
+            return None
+        path = Path(getattr(self.cfg, "table_plane_path", "table_plane.json"))
+        if not path.exists():
+            print(f"[COLLISION] table_plane.json не найден ({path}) — цвет-гейт (фолбэк). "
+                  f"Запусти calibrate_table_plane.py.")
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            plane = np.asarray(data["plane"], dtype=np.float64).ravel()[:4]
+            # Границы гейта из калибровки имеют приоритет над дефолтами конфига.
+            if "gate_min_m" in data:
+                self.cfg.collision_obj_plane_height_min_m = float(data["gate_min_m"])
+            if "gate_max_m" in data:
+                self.cfg.collision_obj_plane_height_max_m = float(data["gate_max_m"])
+            print(f"[COLLISION] Плоскость стола загружена: n=({plane[0]:+.2f},"
+                  f"{plane[1]:+.2f},{plane[2]:+.2f}) d={plane[3]:+.3f}, гейт "
+                  f"{self.cfg.collision_obj_plane_height_min_m*100:.1f}.."
+                  f"{self.cfg.collision_obj_plane_height_max_m*100:.0f} см")
+            return plane
+        except Exception as e:
+            print(f"[COLLISION] Ошибка чтения table_plane.json: {e} — цвет-гейт (фолбэк)")
+            return None
 
     def _confirm_objects(self, scene_objects, body_ds, gripper_spheres):
         """Оставить только объекты, стабильно видимые >=N кадров в одном месте.
@@ -140,19 +171,40 @@ class CollisionService:
         ):
             return cf
 
+        # FK-сферы строим ДО детекции: нужны и для self-filter капсулы (закрыть
+        # тёмный металл руки, который высотный гейт иначе примет за объект), и
+        # для гибридной дистанции ниже.
+        spheres = []
+        if joint_angles is not None and fk_projector.T_cr is not None and len(joint_angles) >= 6:
+            spheres = fk_projector.build_spheres(joint_angles)
+
+        # Self-filter: дорисовать FK-капсулу руки в маску ИСКЛЮЧЕНИЯ для детекции.
+        # Дистанцию до тела ниже меряем по СЫРОЙ глубинной маске (masks.manipulator),
+        # капсула — только чтобы рука не попадала в кандидаты-объекты.
+        manip_for_detect = masks.manipulator
+        if bool(getattr(cfg, "collision_fk_self_filter", False)) and spheres:
+            parts = tuple(getattr(cfg, "collision_fk_self_filter_parts", ("gripper", "wrist")))
+            pad = int(getattr(cfg, "collision_fk_self_filter_pad_px", 10))
+            cap = collision_mod.build_gripper_capsule_mask(
+                spheres, intrinsics, color_bgr.shape[:2], pad_px=pad, parts=parts
+            )
+            if np.count_nonzero(cap) > 0:
+                manip_for_detect = cv2.bitwise_or(masks.manipulator, cap)
+
         if cfg.collision_use_2d_detection:
             cf.scene_objects, cf.scene_obj_mask_2d = collision_mod.detect_scene_objects_2d(
                 points,
                 colors,
                 valid_flat,
-                masks.manipulator,
+                manip_for_detect,
                 color_bgr.shape[:2],
                 cfg,
                 color_bgr=color_bgr,
+                table_plane=self._table_plane,
             )
         else:
             _, (scene_pts, scene_col) = split_cloud_by_mask(
-                points, colors, valid_flat, masks.manipulator
+                points, colors, valid_flat, manip_for_detect
             )
             cf.scene_objects = collision_mod.detect_scene_objects(
                 scene_pts, scene_col, cfg
@@ -188,9 +240,6 @@ class CollisionService:
                     f"({q[0]:+.2f},{q[1]:+.2f},{q[2]:+.2f})" for q in dropped
                 )
                 print(f"[WS DBG] dropped base-coords: {coords} | kept={len(kept)}")
-        spheres = []
-        if joint_angles is not None and fk_projector.T_cr is not None and len(joint_angles) >= 6:
-            spheres = fk_projector.build_spheres(joint_angles)
         # Hybrid: body distance from measured manipulator cloud (no T_cr
         # dependence), gripper from FK sphere (dark metal has no depth).
         gripper_spheres = [s for s in spheres if s.part == "gripper"]
