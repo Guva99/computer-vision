@@ -38,6 +38,7 @@ class CollisionService:
             )
         self._bbox_geoms: list = []
         self._tracks: list = []  # временная устойчивость объектов (анти-мигание протечек руки)
+        self._known: list = []   # object-permanence: объекты в памяти (координаты стола)
         self._danger_hold = False  # гистерезис DANGER (анти-дребезг на границе порога)
         self._danger_lost = 0      # счётчик кадров удержания DANGER после пропажи объекта
         self._T_rc = None  # кэш inv(T_cr) для workspace-фильтра (база ← камера)
@@ -112,6 +113,8 @@ class CollisionService:
         cfg = self.cfg
         match_m = cfg.collision_track_match_m
         used = set()
+        n_in = len(scene_objects)       # диагностика: сколько сырых детекций пришло
+        n_arm_reject = 0                # сколько отбраковано как «протечка руки»
         for obj in scene_objects:
             c = np.asarray(obj.centroid, dtype=np.float64)
             best_i, best_d = -1, match_m
@@ -137,6 +140,7 @@ class CollisionService:
                     and getattr(obj, "arm_depth_delta_m", float("inf"))
                     < float(getattr(cfg, "collision_obj_arm_depth_delta_m", 0.03))
                 ):
+                    n_arm_reject += 1
                     continue
                 self._tracks.append({
                     "centroid": c, "hits": 1, "miss": 0, "obj": obj,
@@ -180,7 +184,116 @@ class CollisionService:
         # совпадающим со свежим — а results ищутся по obj_id.
         for k, obj in enumerate(confirmed):
             obj.obj_id = k
+        # Диагностика потери объекта у руки: печатаем, когда были сырые детекции,
+        # но ни одна не подтвердилась (или что-то отбраковано как протечка руки).
+        if bool(getattr(cfg, "collision_obj_debug_reject", False)):
+            self._confirm_dbg_count = getattr(self, "_confirm_dbg_count", 0) + 1
+            n_touch = sum(1 for o in scene_objects if getattr(o, "touches_arm", False))
+            if n_in > 0 and (len(confirmed) == 0 or n_arm_reject > 0
+                             or self._confirm_dbg_count % 5 == 0):
+                print(
+                    f"[CONFIRM] in={n_in} touch_arm={n_touch} "
+                    f"arm_reject={n_arm_reject} tracks={len(self._tracks)} "
+                    f"confirmed={len(confirmed)} need={need}"
+                )
         return confirmed
+
+    def _update_permanence(self, observations, occ_mask, points, valid_flat,
+                           intrinsics, image_shape):
+        """Object permanence: держать подтверждённые объекты в ПАМЯТИ (координаты
+        стола), пока их место не окажется ЯВНО пустым.
+
+        Мёртвая зона у руки возникала так: рука отъедала пиксели объекта, остаток
+        < min_area → детекция роняла его → objs=0 → ложный SAFE ровно когда рука
+        ближе всего. Здесь объект НЕ исчезает: пока его место перекрыто рукой
+        (occ_mask = маска руки + FK-капсула), удерживаем его; уровень DANGER/WARN
+        считается геометрией как обычно (рука рядом → DANGER держится, робот стоит).
+
+        Удаляем объект ТОЛЬКО когда видим на его месте голый стол N кадров подряд
+        (отсутствие детекции ≠ отсутствие объекта). Под рукой не стареем к удалению.
+        """
+        cfg = self.cfg
+        match_m = float(getattr(cfg, "collision_perm_match_m", 0.06))
+        clear_frames = int(getattr(cfg, "collision_perm_clear_frames", 10))
+        win = int(getattr(cfg, "collision_perm_window_px", 9))
+        occ_frac = float(getattr(cfg, "collision_perm_occ_frac", 0.4))
+        h, w = int(image_shape[0]), int(image_shape[1])
+        fx = float(intrinsics["fx"]); fy = float(intrinsics["fy"])
+        cx = float(intrinsics["cx"]); cy = float(intrinsics["cy"])
+
+        # 1) сопоставить наблюдения этого кадра с известными по 3D-центроиду
+        used = set()
+        for obj in observations:
+            c = np.asarray(obj.centroid, dtype=np.float64)
+            best_i, best_d = -1, match_m
+            for i, k in enumerate(self._known):
+                if i in used:
+                    continue
+                d = float(np.linalg.norm(c - k["centroid"]))
+                if d < best_d:
+                    best_d, best_i = d, i
+            if best_i >= 0:
+                k = self._known[best_i]
+                k["obj"] = obj; k["centroid"] = c; k["empty"] = 0
+                used.add(best_i)
+            else:
+                self._known.append({"obj": obj, "centroid": c, "empty": 0})
+                used.add(len(self._known) - 1)
+
+        # 2) несопоставленные известные: держать под рукой, удалять по пустому столу
+        occ_bool = (occ_mask > 0) if occ_mask is not None else None
+        # Карта высоты над столом (ленивая — только если есть кого проверять).
+        h_img = None
+        if (
+            self._table_plane is not None and points is not None
+            and valid_flat is not None
+            and any(i not in used for i in range(len(self._known)))
+        ):
+            pa, pb, pc, pd = (float(v) for v in np.asarray(self._table_plane).ravel()[:4])
+            hh = points[:, 0] * pa + points[:, 1] * pb + points[:, 2] * pc + pd
+            h_img = np.full(h * w, np.nan, dtype=np.float32)
+            h_img[valid_flat] = hh.astype(np.float32)
+            h_img = h_img.reshape(h, w)
+        gate_min = float(getattr(cfg, "collision_obj_plane_height_min_m", 0.04))
+
+        survivors = []
+        for i, k in enumerate(self._known):
+            if i in used:
+                survivors.append(k)
+                continue
+            c = k["centroid"]
+            z = float(c[2])
+            held = True  # безопасный дефолт: не смогли проверить место → держим
+            if z > 1e-4:
+                u = int(round(fx * float(c[0]) / z + cx))
+                v = int(round(fy * float(c[1]) / z + cy))
+                x0 = max(0, u - win); x1 = min(w, u + win + 1)
+                y0 = max(0, v - win); y1 = min(h, v + win + 1)
+                if x1 > x0 and y1 > y0:
+                    occluded = (
+                        occ_bool is not None
+                        and float(np.mean(occ_bool[y0:y1, x0:x1])) >= occ_frac
+                    )
+                    if occluded:
+                        k["empty"] = 0  # под рукой — держим, не стареем к удалению
+                    elif h_img is not None:
+                        wh = h_img[y0:y1, x0:x1]
+                        wh = wh[np.isfinite(wh)]
+                        if wh.size >= 5 and float(np.median(wh)) < gate_min:
+                            k["empty"] += 1  # видно И пусто → считаем к удалению
+                            if k["empty"] >= clear_frames:
+                                held = False  # объект реально убрали
+                        else:
+                            k["empty"] = 0   # видно, но объект ещё там (или шум) — держим
+            if held:
+                survivors.append(k)
+        self._known = survivors
+
+        # 3) выдать объекты (наблюдённые + удержанные), пере-нумеровать под results
+        out = [k["obj"] for k in self._known if k.get("obj") is not None]
+        for idx, o in enumerate(out):
+            o.obj_id = idx
+        return out
 
     def evaluate(self, masks, fk_projector, points, colors, valid_flat,
                  color_bgr, intrinsics, joint_angles, frame_count, vis) -> CollisionFrame:
@@ -317,6 +430,14 @@ class CollisionService:
         if cfg.collision_persist_frames > 1:
             cf.scene_objects = self._confirm_objects(
                 cf.scene_objects, body_ds, gripper_spheres
+            )
+        # Object permanence: удержать объект в памяти сквозь перекрытие рукой
+        # (мёртвая зона у руки, где гейт площади ронял объект → ложный SAFE).
+        # occ_mask = manip_for_detect (рука + FK-капсула) — тест «под рукой».
+        if bool(getattr(cfg, "collision_object_permanence", True)):
+            cf.scene_objects = self._update_permanence(
+                cf.scene_objects, manip_for_detect, points, valid_flat,
+                intrinsics, color_bgr.shape[:2],
             )
         # Дедуп финальных объектов: слить перекрывающиеся боксы (фрагменты кубика
         # + призраки-коастинг трекера на старом месте). После трекера, чтобы

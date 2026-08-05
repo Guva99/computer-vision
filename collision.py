@@ -669,10 +669,13 @@ def detect_scene_objects_2d(
     objects: List[SceneObject] = []
     obj_id = 0
     n_kept = 0
+    # Диагностика: почему компоненты отбрасываются (какой гейт убил объект у руки).
+    _rej = {"area": 0, "shape": 0, "border": 0, "pts3d": 0, "keepz": 0, "span": 0}
 
     for lab in range(1, n_comp):
         area = int(stats[lab, cv2.CC_STAT_AREA])
         if area < min_area or area > max_area:
+            _rej["area"] += 1
             continue
         x0 = int(stats[lab, cv2.CC_STAT_LEFT])
         y0 = int(stats[lab, cv2.CC_STAT_TOP])
@@ -682,6 +685,7 @@ def detect_scene_objects_2d(
         fill_ratio = float(area) / float(max(1, bw * bh))
         aspect = float(max(bw, bh)) / float(max(1, min(bw, bh)))
         if fill_ratio < min_fill or aspect > max_aspect:
+            _rej["shape"] += 1
             continue
         if drop_border:
             if (
@@ -690,6 +694,7 @@ def detect_scene_objects_2d(
                 or (x0 + bw) >= (w - border_px)
                 or (y0 + bh) >= (h - border_px)
             ):
+                _rej["border"] += 1
                 continue
 
         comp = labels == lab
@@ -713,10 +718,12 @@ def detect_scene_objects_2d(
                 comp_sample = eroded
         sel = comp_sample.reshape(-1)[valid_flat]
         if not np.any(sel):
+            _rej["pts3d"] += 1
             continue
         obj_pts = points[sel]
         obj_col = colors[sel]
         if len(obj_pts) < min_pts_3d:
+            _rej["pts3d"] += 1
             continue
 
         z = obj_pts[:, 2]
@@ -726,6 +733,7 @@ def detect_scene_objects_2d(
         if z_arm is not None and max_z_behind > 0:
             keep_z &= obj_pts[:, 2] < (z_arm + max_z_behind)
         if np.count_nonzero(keep_z) < min_pts_3d:
+            _rej["keepz"] += 1
             continue
         obj_pts = obj_pts[keep_z]
         obj_col = obj_col[keep_z]
@@ -775,6 +783,7 @@ def detect_scene_objects_2d(
             if min_span > 0.0 and len(hgt) >= 5:
                 span = float(np.percentile(hgt, 90) - np.percentile(hgt, 10))
                 if span < min_span:
+                    _rej["span"] += 1
                     continue
         objects.append(
             SceneObject(
@@ -798,7 +807,16 @@ def detect_scene_objects_2d(
     # дёргает центроид детекции (иначе плодятся дубли-треки).
 
     _dbg2d_call_count += 1
-    if _dbg2d_call_count % 60 == 1:
+    if bool(getattr(cfg, "collision_obj_debug_reject", False)) and np.count_nonzero(manipulator_mask) > 0:
+        # Печатаем расклад по причинам, только когда рука в кадре (интересующий
+        # случай — потеря объекта у руки). Троттлинг раз в 5 вызовов.
+        if _dbg2d_call_count % 5 == 0:
+            print(
+                f"[REJECT2D] raw={max(0, n_comp - 1)} kept={n_kept} | "
+                f"area={_rej['area']} shape={_rej['shape']} border={_rej['border']} "
+                f"pts3d={_rej['pts3d']} keepz={_rej['keepz']} span={_rej['span']}"
+            )
+    elif _dbg2d_call_count % 60 == 1:
         print(
             f"[COLLISION DBG] scene_obj2d: components={max(0, n_comp - 1)}, "
             f"kept={n_kept}, objects={len(objects)}"

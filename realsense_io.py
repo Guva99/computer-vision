@@ -305,6 +305,20 @@ class AppConfig:
     # (десатурирована) не трогает; T_cr-независимо.
     collision_body_color_clean: bool = True
     collision_body_sat_max: int = 70
+    # ДИАГНОСТИКА (временно): печатать, какой гейт отбраковал объект у руки.
+    # [REJECT2D] — стадия детекции, [CONFIRM] — стадия трекера. Выключить после.
+    collision_obj_debug_reject: bool = False
+    # OBJECT PERMANENCE: держать подтверждённый объект в ПАМЯТИ (координаты стола),
+    # пока его место не окажется ЯВНО пустым. Под рукой (перекрытие FK-капсулой)
+    # объект удерживается — детекция сквозь руку не нужна. Это отвязывает
+    # безопасность от «видим ли объект именно в этот кадр» и убирает мёртвую зону
+    # у руки (где гейт площади ронял объект → ложный SAFE). Отсутствие детекции ≠
+    # отсутствие объекта: удаляем только когда видим голый стол на его месте.
+    collision_object_permanence: bool = True
+    collision_perm_match_m: float = 0.06     # сопоставление память↔детекция (объект статичен)
+    collision_perm_clear_frames: int = 10    # кадров «видно и пусто» до удаления
+    collision_perm_window_px: int = 9        # полуокно репроекции центроида для тестов
+    collision_perm_occ_frac: float = 0.4     # доля окна под рукой → «перекрыт» (держим)
     # Цветовой фильтр объектов (ФОЛБЭК, если нет плоскости): брать только
     # контрастные пятна (светлые ИЛИ насыщенные), тёмный стол отсекается.
     collision_obj_color_gate: bool = True
@@ -357,7 +371,7 @@ class AppConfig:
     robot_base: int = 1
     robot_tool: int = 1
     # Debug
-    show_debug_masks: bool = False  # нажмите d в окне для toggle или выставьте True здесь
+    show_debug_masks: bool = True  # нажмите d в окне для toggle или выставьте True здесь
 
 
 class RealSenseCamera:
