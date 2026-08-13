@@ -316,6 +316,16 @@ class AppConfig:
     # отсутствие объекта: удаляем только когда видим голый стол на его месте.
     collision_object_permanence: bool = True
     collision_perm_match_m: float = 0.06     # сопоставление память↔детекция (объект статичен)
+    # Радиус сопоставления растёт с дальностью: шум глубины RealSense увеличивается
+    # с z, у дальнего объекта центроид прыгает > фиксированных 6 см → память не
+    # узнаёт его и заводит ВТОРУЮ запись на тот же кубик → лишний бокс.
+    collision_perm_match_depth_k: float = 0.03  # +3 см на метр дальности
+    # Дедуп памяти: слить записи-дубли (вложенные/перекрытые боксы на одном
+    # объекте). Ловим по перекрытию 2D-боксов + 3D-близости, оставляем полную.
+    collision_perm_dedup: bool = True
+    collision_perm_dedup_iou: float = 0.10
+    collision_perm_dedup_contain: float = 0.30
+    collision_perm_dedup_m: float = 0.15     # 3D-санитар: не сливать разные кубики
     collision_perm_clear_frames: int = 10    # кадров «видно и пусто» до удаления
     collision_perm_window_px: int = 9        # полуокно репроекции центроида для тестов
     collision_perm_occ_frac: float = 0.4     # доля окна под рукой → «перекрыт» (держим)
@@ -384,6 +394,12 @@ class AppConfig:
     # кубиках (иначе верх стопки без глубины → бокс не на всю высоту И коллизия
     # «не видит» верх). Только spatial + hole_filling (per-frame): temporal смазал
     # бы движущуюся руку, disparity-transform ломается на уже выровненной глубине.
+    # Настройка сенсора глубины: больше ИЗМЕРЕННЫХ точек на кубиках (пресет
+    # High Density + полная мощность лазера). В отличие от hole_filling ничего не
+    # выдумывает — просто плотнее меряет, поэтому маски крупнее и стабильнее.
+    depth_sensor_tune: bool = True
+    depth_high_density: bool = True
+    depth_laser_power: float = -1.0   # -1 = максимум устройства, 0 = не трогать
     # ВЫКЛ по умолчанию: hole_filling заливал дырки стопки ДАЛЬНЕЙ глубиной (фон)
     # → высота стопки падала ниже гейта → объект пропадал из детекции. Плотный
     # valid был обманкой (объект залит фоном). Держим сырую глубину.
@@ -437,7 +453,36 @@ class RealSenseCamera:
         self.profile = self.pipeline.start(rs_cfg)
         depth_sensor = self.profile.get_device().first_depth_sensor()
         self.depth_scale = float(depth_sensor.get_depth_scale())
+        self._tune_depth_sensor(depth_sensor)
         Path(self.config.output_dir).mkdir(parents=True, exist_ok=True)
+
+    def _tune_depth_sensor(self, depth_sensor) -> None:
+        """Поднять ЗАПОЛНЕННОСТЬ глубины штатными ручками сенсора.
+
+        Кубики глянцевые/цветные — сенсор отдаёт глубину в основном с верхних
+        граней, маски получаются мелкими и мигают. Пресет High Density и полная
+        мощность лазера дают больше ИЗМЕРЕННЫХ точек (в отличие от hole_filling,
+        который выдумывает глубину из соседей и топил стопку фоном).
+        """
+        cfg = self.config
+        if not bool(getattr(cfg, "depth_sensor_tune", True)):
+            return
+        if bool(getattr(cfg, "depth_high_density", True)):
+            try:
+                depth_sensor.set_option(rs.option.visual_preset,
+                                        float(rs.rs400_visual_preset.high_density))
+                print("[RS] visual_preset = High Density")
+            except Exception as e:
+                print(f"[RS] visual_preset не поддержан: {e}")
+        lp = float(getattr(cfg, "depth_laser_power", -1.0))
+        if lp != 0.0:
+            try:
+                rng = depth_sensor.get_option_range(rs.option.laser_power)
+                val = rng.max if lp < 0 else max(rng.min, min(lp, rng.max))
+                depth_sensor.set_option(rs.option.laser_power, val)
+                print(f"[RS] laser_power = {val:.0f} (max {rng.max:.0f})")
+            except Exception as e:
+                print(f"[RS] laser_power не поддержан: {e}")
 
     def stop(self) -> None:
         if self.profile is not None:

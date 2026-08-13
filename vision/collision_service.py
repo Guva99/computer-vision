@@ -208,6 +208,47 @@ class CollisionService:
         pts = getattr(obj, "points", None)
         return float(len(pts)) if pts is not None else 0.0
 
+    def _dedup_known(self):
+        """Слить записи-дубли в памяти (два бокса на одном объекте).
+
+        Дальний объект шумит по глубине → центроид прыгает дальше радиуса
+        сопоставления → память заводит ВТОРУЮ запись на тот же кубик. Старая при
+        этом не удаляется: место не под рукой, а стол там не пустой (объект-то
+        стоит) → «держим» бесконечно. Ловим такие пары по перекрытию 2D-боксов
+        (вложенные рамки) + 3D-близости, оставляем более полную запись.
+        """
+        cfg = self.cfg
+        if not bool(getattr(cfg, "collision_perm_dedup", True)) or len(self._known) < 2:
+            return
+        iou_t = float(getattr(cfg, "collision_perm_dedup_iou", 0.10))
+        con_t = float(getattr(cfg, "collision_perm_dedup_contain", 0.30))
+        max_m = float(getattr(cfg, "collision_perm_dedup_m", 0.15))
+        keep: list = []
+        for k in self._known:
+            dup_of = -1
+            for j, kept in enumerate(keep):
+                if float(np.linalg.norm(k["centroid"] - kept["centroid"])) > max_m:
+                    continue  # разные объекты — не трогаем
+                bb_a = getattr(k.get("obj"), "bbox_2d", None)
+                bb_b = getattr(kept.get("obj"), "bbox_2d", None)
+                if bb_a is not None and bb_b is not None:
+                    iou, cont = collision_mod._box_overlap(bb_a, bb_b)
+                    if iou >= iou_t or cont >= con_t:
+                        dup_of = j
+                        break
+                else:
+                    dup_of = j  # боксов нет — решает 3D-близость
+                    break
+            if dup_of < 0:
+                keep.append(k)
+                continue
+            # оставить более ПОЛНУЮ запись; свежесть (empty) берём лучшую из пары
+            fresh = min(k.get("empty", 0), keep[dup_of].get("empty", 0))
+            if k.get("area", 0.0) > keep[dup_of].get("area", 0.0):
+                keep[dup_of] = k
+            keep[dup_of]["empty"] = fresh
+        self._known = keep
+
     def _update_permanence(self, observations, occ_mask, points, valid_flat,
                            intrinsics, image_shape):
         """Object permanence: держать подтверждённые объекты в ПАМЯТИ (координаты
@@ -248,9 +289,13 @@ class CollisionService:
 
         # 1) сопоставить наблюдения этого кадра с известными по 3D-центроиду
         used = set()
+        match_k = float(getattr(cfg, "collision_perm_match_depth_k", 0.03))
         for obj in observations:
             c = np.asarray(obj.centroid, dtype=np.float64)
-            best_i, best_d = -1, match_m
+            # Радиус сопоставления растёт с дальностью: шум глубины ~z, у дальнего
+            # объекта центроид прыгает дальше фиксированного порога → иначе память
+            # заводит вторую запись на тот же кубик (лишний бокс).
+            best_i, best_d = -1, match_m + match_k * max(0.0, float(c[2]))
             for i, k in enumerate(self._known):
                 if i in used:
                     continue
@@ -322,6 +367,8 @@ class CollisionService:
             if held:
                 survivors.append(k)
         self._known = survivors
+        # 2.5) слить дубли памяти (шум глубины у дальних объектов → 2 записи)
+        self._dedup_known()
 
         # 3) выдать объекты (наблюдённые + удержанные), пере-нумеровать под results
         out = [k["obj"] for k in self._known if k.get("obj") is not None]
