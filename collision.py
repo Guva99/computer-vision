@@ -639,6 +639,12 @@ def detect_scene_objects_2d(
     if cons_px > 1:
         k_cons = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (cons_px, cons_px))
         obj_mask_u8 = cv2.morphologyEx(obj_mask_u8, cv2.MORPH_CLOSE, k_cons)
+    # Вертикальный close: сшить швы между кубиками СТОПКИ по вертикали (узкое по
+    # X ядро не склеивает соседние объекты по горизонтали) → бокс на всю высоту.
+    vclose = int(getattr(cfg, "collision_obj_vclose_px", 0))
+    if vclose > 1:
+        k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (3, vclose))
+        obj_mask_u8 = cv2.morphologyEx(obj_mask_u8, cv2.MORPH_CLOSE, k_v)
 
     z_arm: Optional[float] = None
     if np.count_nonzero(manipulator_mask) > 0:

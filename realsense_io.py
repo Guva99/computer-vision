@@ -325,6 +325,10 @@ class AppConfig:
     # принимает стойко уменьшившийся объект; кратковременную усадку (рука прошла)
     # игнорирует. Обновляется, когда объект снова виден целиком.
     collision_perm_keep_fullest: bool = True
+    # Вертикальный close маски объекта: сшить швы между кубиками СТОПКИ по
+    # вертикали (узкий по X, высокий по Y) — не склеивает соседние объекты по
+    # горизонтали. Помогает боксу тянуться на всю высоту башни. 0 = выкл.
+    collision_obj_vclose_px: int = 15
     # Цветовой фильтр объектов (ФОЛБЭК, если нет плоскости): брать только
     # контрастные пятна (светлые ИЛИ насыщенные), тёмный стол отсекается.
     collision_obj_color_gate: bool = True
@@ -376,6 +380,17 @@ class AppConfig:
     robot_cycle_right: tuple = (350, -200, 600, 180, 0, 180)
     robot_base: int = 1
     robot_tool: int = 1
+    # Пост-обработка глубины RealSense: заполнить дырки на глянцевых/цветных
+    # кубиках (иначе верх стопки без глубины → бокс не на всю высоту И коллизия
+    # «не видит» верх). Только spatial + hole_filling (per-frame): temporal смазал
+    # бы движущуюся руку, disparity-transform ломается на уже выровненной глубине.
+    # ВЫКЛ по умолчанию: hole_filling заливал дырки стопки ДАЛЬНЕЙ глубиной (фон)
+    # → высота стопки падала ниже гейта → объект пропадал из детекции. Плотный
+    # valid был обманкой (объект залит фоном). Держим сырую глубину.
+    depth_filters_enabled: bool = False
+    depth_spatial_holes_fill: int = 2   # 0..5 — агрессивность заполнения в spatial
+    depth_hole_filling: bool = True     # отдельный hole_filling_filter (добивка)
+    depth_hole_filling_mode: int = 1    # 0=слева 1=дальний 2=ближний сосед
     # Debug
     show_debug_masks: bool = True  # нажмите d в окне для toggle или выставьте True здесь
 
@@ -387,6 +402,33 @@ class RealSenseCamera:
         self.align_to_color = rs.align(rs.stream.color)
         self.profile = None
         self.depth_scale = 0.001
+        # Фильтры глубины (создаём один раз): применяются ПОСЛЕ align в
+        # get_aligned_frames. Заполняют дырки на кубиках → полные маски объектов.
+        self._depth_filters = self._build_depth_filters(config)
+
+    @staticmethod
+    def _build_depth_filters(config) -> list:
+        if not bool(getattr(config, "depth_filters_enabled", True)):
+            return []
+        filters = []
+        spatial = rs.spatial_filter()
+        try:
+            spatial.set_option(
+                rs.option.holes_fill, int(getattr(config, "depth_spatial_holes_fill", 2))
+            )
+        except Exception:
+            pass
+        filters.append(spatial)
+        if bool(getattr(config, "depth_hole_filling", True)):
+            hole = rs.hole_filling_filter()
+            try:
+                hole.set_option(
+                    rs.option.holes_fill, int(getattr(config, "depth_hole_filling_mode", 1))
+                )
+            except Exception:
+                pass
+            filters.append(hole)
+        return filters
 
     def start(self) -> None:
         rs_cfg = rs.config()
@@ -422,6 +464,17 @@ class RealSenseCamera:
             color_frame = aligned_frames.get_color_frame()
             if not depth_frame or not color_frame:
                 return None
+            # Пост-обработка глубины (spatial + hole_filling): заполнить дырки на
+            # кубиках. После align — чтобы не терять выравнивание к цвету. При сбое
+            # фильтра берём сырую глубину (не роняем кадр).
+            if self._depth_filters:
+                try:
+                    _df = depth_frame
+                    for _f in self._depth_filters:
+                        _df = _f.process(_df)
+                    depth_frame = _df
+                except Exception as _fe:
+                    print(f"[WARN] depth filter failed, raw depth: {_fe}")
             color = np.asanyarray(color_frame.get_data())
             depth = np.asanyarray(depth_frame.get_data())
             intr = color_frame.profile.as_video_stream_profile().intrinsics

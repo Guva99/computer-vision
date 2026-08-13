@@ -231,6 +231,20 @@ class CollisionService:
         h, w = int(image_shape[0]), int(image_shape[1])
         fx = float(intrinsics["fx"]); fy = float(intrinsics["fy"])
         cx = float(intrinsics["cx"]); cy = float(intrinsics["cy"])
+        occ_bool = (occ_mask > 0) if occ_mask is not None else None
+
+        def _occluded(c):
+            """Перекрыт ли центроид рукой: доля окна репроекции под occ-маской."""
+            z = float(c[2])
+            if z <= 1e-4 or occ_bool is None:
+                return False
+            u = int(round(fx * float(c[0]) / z + cx))
+            v = int(round(fy * float(c[1]) / z + cy))
+            x0 = max(0, u - win); x1 = min(w, u + win + 1)
+            y0 = max(0, v - win); y1 = min(h, v + win + 1)
+            if x1 <= x0 or y1 <= y0:
+                return False
+            return float(np.mean(occ_bool[y0:y1, x0:x1])) >= occ_frac
 
         # 1) сопоставить наблюдения этого кадра с известными по 3D-центроиду
         used = set()
@@ -245,21 +259,13 @@ class CollisionService:
                     best_d, best_i = d, i
             if best_i >= 0:
                 k = self._known[best_i]
-                if not keep_fullest:
-                    k["obj"] = obj; k["centroid"] = c
-                else:
-                    # Держим САМЫЙ ПОЛНЫЙ бокс: рука отъедает ближнюю сторону →
-                    # усадка. Обновляем, только если новый не меньше сохранённого;
-                    # иначе держим полный (рамка стабильна, дистанция по ближней
-                    # грани). Медленный decay принимает стойко уменьшившийся объект.
-                    new_area = self._obj_area(obj)
-                    if new_area >= k.get("area", 0.0):
-                        k["obj"] = obj; k["area"] = new_area; k["centroid"] = c
-                    else:
-                        k["area"] = k.get("area", new_area) * 0.98 + new_area * 0.02
-                        if new_area >= k["area"]:
-                            k["obj"] = obj; k["centroid"] = c
-                        # иначе — сохраняем полный obj И его центроид (без дрейфа)
+                # Держим ПОЛНУЮ рамку ТОЛЬКО пока объект перекрыт рукой (усадка — от
+                # руки). Виден целиком → всегда берём текущую детекцию: само-
+                # коррекция, никакой залипшей широкой рамки из старого кадра.
+                new_area = self._obj_area(obj)
+                if (not keep_fullest) or (not _occluded(c)) or new_area >= k.get("area", 0.0):
+                    k["obj"] = obj; k["area"] = new_area; k["centroid"] = c
+                # else: под рукой и новый меньше — держим полный сохранённый obj
                 k["empty"] = 0
                 used.add(best_i)
             else:
@@ -270,7 +276,6 @@ class CollisionService:
                 used.add(len(self._known) - 1)
 
         # 2) несопоставленные известные: держать под рукой, удалять по пустому столу
-        occ_bool = (occ_mask > 0) if occ_mask is not None else None
         # Карта высоты над столом (ленивая — только если есть кого проверять).
         h_img = None
         if (
