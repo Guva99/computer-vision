@@ -31,6 +31,10 @@ class FrameResult:
     colors: np.ndarray
     collision_level: str = "SAFE"  # SAFE/WARN/DANGER — сигнал для остановки робота
     stage_times: dict = field(default_factory=dict)
+    # Поля для лога решений (app/decision_log.py) — на поведение не влияют.
+    min_dist_m: float = float("inf")
+    focus_part: str = ""
+    n_objects: int = 0
 
 
 class PerceptionPipeline:
@@ -149,4 +153,8 @@ class PerceptionPipeline:
             colors=colors,
             collision_level=cf.worst_level,
             stage_times=st,
+            min_dist_m=(cf.worst_focus.min_dist_m if cf.worst_focus is not None
+                        else float("inf")),
+            focus_part=(cf.worst_focus.part if cf.worst_focus is not None else ""),
+            n_objects=len(cf.scene_objects),
         )

@@ -407,6 +407,13 @@ class AppConfig:
     depth_spatial_holes_fill: int = 2   # 0..5 — агрессивность заполнения в spatial
     depth_hole_filling: bool = True     # отдельный hole_filling_filter (добивка)
     depth_hole_filling_mode: int = 1    # 0=слева 1=дальний 2=ближний сосед
+    # Метрики качества: пер-кадровый лог решений для tools/compute_metrics.py.
+    # ВЫКЛ по умолчанию — детекцию и производительность не затрагивает.
+    # Включи на время прогона сценария из scenarios.yaml, потом размечай GT
+    # (tools/annotate.py) и считай проценты (P/R/F1, ложные стопы, MAE дистанции).
+    enable_decision_log: bool = False
+    decision_log_path: str = "captures/decisions.csv"
+    scenario_id: str = ""   # id сценария из scenarios.yaml (попадает в лог)
     # Debug
     show_debug_masks: bool = True  # нажмите d в окне для toggle или выставьте True здесь
 

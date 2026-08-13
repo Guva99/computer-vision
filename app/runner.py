@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import open3d as o3d
 
+from app.decision_log import DecisionLogger
 from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
 from collision import LEVEL_ORDER
@@ -38,6 +39,15 @@ class AppRunner:
         self.visualizer = CloudVisualizer(cfg)
         self.pipeline = PerceptionPipeline(cfg, self.visualizer)
         self.perf = PerfMonitor(cfg)
+        # Лог решений для метрик качества (tools/compute_metrics.py). По умолчанию
+        # ВЫКЛ — на детекцию и производительность не влияет.
+        self.decision_log = None
+        if bool(getattr(cfg, "enable_decision_log", False)):
+            self.decision_log = DecisionLogger(
+                str(getattr(cfg, "decision_log_path", "captures/decisions.csv")),
+                str(getattr(cfg, "scenario_id", "")),
+            )
+            print(f"[METRICS] Лог решений → {self.decision_log.path}")
 
         # ── Управление роботом: цикл движения + остановка по коллизии ──
         # Отдельное соединение с контроллером (JointAngleReader держит своё на чтение).
@@ -112,6 +122,11 @@ class AppRunner:
                 _t_total = time.perf_counter() - _t0
                 inst_fps = 1.0 / _t_total if _t_total > 0 else 0.0
                 self.perf.sample(frame_count, inst_fps, result.stage_times)
+                if self.decision_log is not None:
+                    self.decision_log.update(
+                        frame_count, result.collision_level, result.min_dist_m,
+                        result.focus_part, result.n_objects, inst_fps,
+                    )
                 self._draw_perf(result.overlay)
 
                 cv2.imshow("RGB", result.overlay)
@@ -161,6 +176,8 @@ class AppRunner:
             cv2.destroyAllWindows()
             self.pipeline.close()
             self.perf.close()
+            if self.decision_log is not None:
+                self.decision_log.close()
 
     def _draw_perf(self, overlay) -> None:
         """Нарисовать CPU/RAM/GPU в правом-нижнем углу кадра."""
