@@ -374,6 +374,16 @@ class CollisionService:
         out = [k["obj"] for k in self._known if k.get("obj") is not None]
         for idx, o in enumerate(out):
             o.obj_id = idx
+        # Диагностика слоя памяти: видно, держит ли он объект под рукой и не
+        # отпускает ли раньше времени (obs=сколько пришло подтверждённых детекций,
+        # known=записей в памяти, occ=перекрыто рукой, empty=счётчики «видно и пусто»).
+        if bool(getattr(cfg, "collision_obj_debug_reject", False)):
+            self._perm_dbg = getattr(self, "_perm_dbg", 0) + 1
+            if self._perm_dbg % 5 == 0 or len(observations) != len(out):
+                n_occ = sum(1 for k in self._known if _occluded(k["centroid"]))
+                emp = ",".join(str(k.get("empty", 0)) for k in self._known[:6])
+                print(f"[PERM] obs={len(observations)} known={len(self._known)} "
+                      f"occluded={n_occ} out={len(out)} empty=[{emp}]")
         return out
 
     def evaluate(self, masks, fk_projector, points, colors, valid_flat,
