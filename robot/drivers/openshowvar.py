@@ -173,7 +173,12 @@ class OpenShowVar:
             print('[DEBUG]', result)
         
         if result[-1].endswith(b'\x01') and _msg_id == self.msg_id:
-            self.msg_id += 1
+            # Обёртка счётчика: msg_id пакуется как '!H' (макс. 65535). Без
+            # переноса через ~65 тыс. операций struct.pack падал с
+            # "'H' format requires 0 <= number <= 65535", и ВСЕ команды движения
+            # переставали доходить до контроллера (цикл печатал Moving wp[N], а
+            # робот стоял). Опрос COM_CASEVAR идёт плотно, счётчик копится быстро.
+            self.msg_id = self.msg_id % 65535 + 1
             return var_value
         
         return None

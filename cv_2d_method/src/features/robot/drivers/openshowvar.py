@@ -150,7 +150,9 @@ class OpenShowVar:
             print('[DEBUG]', result)
         
         if result[-1].endswith(b'\x01') and _msg_id == self.msg_id:
-            self.msg_id += 1
+            # Обёртка счётчика: msg_id пакуется как '!H' (макс. 65535); без
+            # переноса struct.pack падает и команды перестают доходить.
+            self.msg_id = self.msg_id % 65535 + 1
             return var_value
         
         return None
