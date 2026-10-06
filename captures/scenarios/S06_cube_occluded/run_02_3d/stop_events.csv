@@ -1,0 +1,3 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S06_cube_occluded,16,7.169821,7.489202,7.491666,9.719393,319.38,2.46,2549.57,0.0453,,1,0,38.9,$VEL_ACT
+S06_cube_occluded,23,8.814458,8.931503,8.933792,8.986061,117.04,2.29,171.60,0.0202,,0,0,86.8,$VEL_ACT

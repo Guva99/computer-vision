@@ -1,0 +1,2 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S07_box_dim_light,11,7.737311,7.844226,7.846406,7.954097,106.91,2.18,216.79,0.0196,1.9603,0,0,28.2,$VEL_ACT

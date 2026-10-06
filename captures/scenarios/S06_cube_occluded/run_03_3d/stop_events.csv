@@ -1,0 +1,5 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S06_cube_occluded,42,10.339730,10.477957,10.480426,10.539716,138.23,2.47,199.99,0.0111,0.0000,1,0,30.1,$VEL_ACT
+S06_cube_occluded,160,28.847480,28.978858,28.987382,29.044906,131.38,8.52,197.43,0.0785,0.0000,1,0,29.8,$VEL_ACT
+S06_cube_occluded,166,29.738674,29.859143,29.861677,29.950558,120.47,2.53,211.88,0.0353,0.0000,1,0,30.0,$VEL_ACT
+S06_cube_occluded,172,30.636965,30.777600,30.784151,30.847414,140.63,6.55,210.45,0.0100,0.0000,0,0,35.0,$VEL_ACT
