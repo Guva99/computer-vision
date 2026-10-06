@@ -1,0 +1,3 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S05_cube_on_path_fast,40,10.741335,10.874459,10.876583,11.707905,133.12,2.12,966.57,0.0471,2.2038,1,0,29.8,$VEL_ACT
+S05_cube_on_path_fast,130,25.226689,25.341334,25.361383,25.459794,114.65,20.05,233.11,0.0234,0.1263,1,0,31.8,$VEL_ACT
