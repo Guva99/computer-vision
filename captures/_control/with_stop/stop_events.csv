@@ -1,0 +1,2 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+control_with_stop,4,5.052995,5.213047,5.219306,5.308162,160.05,6.26,255.17,0.0079,0.0981,0,,28.0,$VEL_ACT

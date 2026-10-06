@@ -1,0 +1,2 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S11_resume_after_clear,32,11.626429,11.780808,11.783435,11.847323,154.38,2.63,220.89,0.0140,0.0436,1,,31.3,$VEL_ACT

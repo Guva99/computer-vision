@@ -1,0 +1,2 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S08_dynamic_intrusion,44,10.569329,10.683256,10.685546,10.814042,113.93,2.29,244.71,0.0136,2.2979,0,0,30.0,$VEL_ACT

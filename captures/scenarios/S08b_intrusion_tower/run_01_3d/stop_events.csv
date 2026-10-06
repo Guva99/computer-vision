@@ -1,0 +1,2 @@
+scenario_id,frame_danger,t_frame,t_decision,t_command,t_stopped,detect_latency_ms,stop_time_ms,total_reaction_ms,min_dist_m_at_danger,link_speed_m_s,resumed,contact,t_stopped_precision_ms,stop_detect_source
+S08b_intrusion_tower,55,23.736677,23.876175,23.879869,23.941670,139.50,3.69,204.99,0.0215,0.0000,0,0,29.5,$VEL_ACT

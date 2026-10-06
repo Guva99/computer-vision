@@ -1,0 +1,17 @@
+{
+  "intrinsics": {
+    "fx": 604.6021728515625,
+    "fy": 604.1624755859375,
+    "cx": 318.07861328125,
+    "cy": 248.42539978027344,
+    "width": 640,
+    "height": 480
+  },
+  "depth_scale": 0.0010000000474974513,
+  "git_commit": "44b779fa10602ba652f4152fff278e756ba11120",
+  "branch": "feature/fix_stable_detection",
+  "scenario_id": "S08_dynamic_intrusion",
+  "created": "2026-10-01T15:56:53",
+  "n_frames": 190,
+  "n_dropped": 0
+}
