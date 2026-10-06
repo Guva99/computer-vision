@@ -1,0 +1,2 @@
+scenario_id,obstacle,start_distance_m,robot_ctrl_speed,lighting,occlusion,frames,TP,FP,FN,TN,precision,recall,f1
+S04_cube_on_path,,,,,,60,18,3,3,36,0.857,0.857,0.857

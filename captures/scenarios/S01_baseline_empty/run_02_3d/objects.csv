@@ -1,0 +1,12 @@
+scenario_id,frame,obj_id,area_px,height_m,dist_m,level,reject_reason
+S01_baseline_empty,22,,36,,,,area
+S01_baseline_empty,65,,136,,,,area
+S01_baseline_empty,80,,18,,,,area
+S01_baseline_empty,81,,14,,,,area
+S01_baseline_empty,82,,74,,,,area
+S01_baseline_empty,84,,84,,,,area
+S01_baseline_empty,85,,8,,,,area
+S01_baseline_empty,87,,115,,,,area
+S01_baseline_empty,88,,37,,,,area
+S01_baseline_empty,88,,16,,,,area
+S01_baseline_empty,89,,55,,,,area
