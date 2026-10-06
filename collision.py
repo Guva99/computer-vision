@@ -20,6 +20,21 @@ from pointcloud_pipeline import filter_cloud, to_open3d_cloud
 _dbg_call_count = 0
 _dbg2d_call_count = 0
 
+# Пообъектные записи кандидатов последнего кадра (A4, objects.csv): что пришло в
+# детекцию и какой гейт это убил. Счётчик _rej ниже остаётся агрегатом для
+# консольной диагностики, а здесь копится строка НА КАЖДОГО кандидата — иначе
+# в метриках не видно, по какой причине терялся конкретный объект.
+# Заполняется только при cfg.enable_objects_log; забирается pop_candidate_records().
+_last_candidates: List[dict] = []
+
+
+def pop_candidate_records() -> List[dict]:
+    """Забрать записи кандидатов последнего кадра детекции (и очистить буфер)."""
+    global _last_candidates
+    out = _last_candidates
+    _last_candidates = []
+    return out
+
 
 @dataclass
 class LinkSphere:
@@ -677,11 +692,26 @@ def detect_scene_objects_2d(
     n_kept = 0
     # Диагностика: почему компоненты отбрасываются (какой гейт убил объект у руки).
     _rej = {"area": 0, "shape": 0, "border": 0, "pts3d": 0, "keepz": 0, "span": 0}
+    # Пообъектные записи для objects.csv (A4). Пишем только под флагом: иначе это
+    # список словарей на каждый блоб каждого кадра — в горячем цикле не нужен.
+    _log_cands = bool(getattr(cfg, "enable_objects_log", False))
+    _cands: List[dict] = []
+
+    def _note(reason: str, area_px, height_m=None) -> None:
+        """Записать ОТБРАКОВАННОГО кандидата и гейт, который его убил."""
+        _cands.append({
+            "obj_id": "",
+            "area_px": int(area_px),
+            "height_m": height_m,
+            "reject_reason": reason,
+        })
 
     for lab in range(1, n_comp):
         area = int(stats[lab, cv2.CC_STAT_AREA])
         if area < min_area or area > max_area:
             _rej["area"] += 1
+            if _log_cands:
+                _note("area", area)
             continue
         x0 = int(stats[lab, cv2.CC_STAT_LEFT])
         y0 = int(stats[lab, cv2.CC_STAT_TOP])
@@ -692,6 +722,8 @@ def detect_scene_objects_2d(
         aspect = float(max(bw, bh)) / float(max(1, min(bw, bh)))
         if fill_ratio < min_fill or aspect > max_aspect:
             _rej["shape"] += 1
+            if _log_cands:
+                _note("shape", area)
             continue
         if drop_border:
             if (
@@ -701,6 +733,8 @@ def detect_scene_objects_2d(
                 or (y0 + bh) >= (h - border_px)
             ):
                 _rej["border"] += 1
+                if _log_cands:
+                    _note("border", area)
                 continue
 
         comp = labels == lab
@@ -725,11 +759,15 @@ def detect_scene_objects_2d(
         sel = comp_sample.reshape(-1)[valid_flat]
         if not np.any(sel):
             _rej["pts3d"] += 1
+            if _log_cands:
+                _note("pts3d", area)
             continue
         obj_pts = points[sel]
         obj_col = colors[sel]
         if len(obj_pts) < min_pts_3d:
             _rej["pts3d"] += 1
+            if _log_cands:
+                _note("pts3d", area)
             continue
 
         z = obj_pts[:, 2]
@@ -740,6 +778,8 @@ def detect_scene_objects_2d(
             keep_z &= obj_pts[:, 2] < (z_arm + max_z_behind)
         if np.count_nonzero(keep_z) < min_pts_3d:
             _rej["keepz"] += 1
+            if _log_cands:
+                _note("keepz", area)
             continue
         obj_pts = obj_pts[keep_z]
         obj_col = obj_col[keep_z]
@@ -790,7 +830,12 @@ def detect_scene_objects_2d(
                 span = float(np.percentile(hgt, 90) - np.percentile(hgt, 10))
                 if span < min_span:
                     _rej["span"] += 1
+                    if _log_cands:
+                        _note("span", area, obj_height)
                     continue
+        # Принятые кандидаты здесь НЕ записываем: строку по ним пишет
+        # CollisionService уже с финальным obj_id, дистанцией и уровнем — иначе
+        # в objects.csv один и тот же объект появлялся бы дважды.
         objects.append(
             SceneObject(
                 obj_id=obj_id,
@@ -811,6 +856,9 @@ def detect_scene_objects_2d(
     # Склейка перекрывающихся боксов вынесена ПОСЛЕ трекера (collision_service):
     # там дедуп ловит и фрагменты детекции, и призраков-коастинг трекера, и не
     # дёргает центроид детекции (иначе плодятся дубли-треки).
+
+    global _last_candidates
+    _last_candidates = _cands
 
     _dbg2d_call_count += 1
     if bool(getattr(cfg, "collision_obj_debug_reject", False)) and np.count_nonzero(manipulator_mask) > 0:

@@ -12,6 +12,7 @@ from typing import Optional
 
 import numpy as np
 
+import collision as collision_mod
 from pointcloud_pipeline import build_cloud_arrays
 from realsense_io import AppConfig
 from robot.services.fk_service import FkFrame, FkProjector
@@ -35,13 +36,24 @@ class FrameResult:
     min_dist_m: float = float("inf")
     focus_part: str = ""
     n_objects: int = 0
+    # Поля сбора данных (A3-A5). Заполняются только при включённых флагах.
+    object_records: list = field(default_factory=list)   # строки objects.csv
+    nearest_fk_point: Optional[np.ndarray] = None        # для link_speed_m_s
+    obstacle_mask: Optional[np.ndarray] = None           # дамп масок (IoU)
+    manip_mask: Optional[np.ndarray] = None
 
 
 class PerceptionPipeline:
     def __init__(self, cfg: AppConfig, visualizer: CloudVisualizer):
         self.cfg = cfg
         self.visualizer = visualizer
-        self.joint_reader = JointAngleReader(cfg).connect()
+        # Playback (A2): углы берутся из joints.csv записи, а не с контроллера.
+        # Интерфейс тот же, поэтому остальной конвейер разницы не видит.
+        if str(getattr(cfg, "source_mode", "camera")) == "playback":
+            from app.playback import PlaybackJointReader
+            self.joint_reader = PlaybackJointReader(cfg).connect()
+        else:
+            self.joint_reader = JointAngleReader(cfg).connect()
         self.fk_projector = FkProjector(cfg)
         self.segmenter = ManipulatorSegmenter(cfg)
         self.gripper_wrist = GripperWristService(cfg)
@@ -51,7 +63,7 @@ class PerceptionPipeline:
     def close(self) -> None:
         self.joint_reader.close()
 
-    def process(self, frame, frame_count: int) -> FrameResult:
+    def process(self, frame, frame_count: int, dump_masks: bool = False) -> FrameResult:
         cfg = self.cfg
         color_bgr, depth, intrinsics, depth_scale = frame
         st = {}
@@ -146,6 +158,20 @@ class PerceptionPipeline:
                 color_bgr, depth, depth_scale, masks, gripper_debug, cf
             )
 
+        # Маски для IoU (A5) строим ТОЛЬКО на кадрах дампа: растеризация точек
+        # объектов — Python-цикл, каждый кадр она не нужна. Маска манипулятора
+        # уже готова, копируем её, чтобы дамп не зависел от следующего кадра.
+        obstacle_mask = manip_mask = None
+        if dump_masks:
+            obstacle_mask = (
+                cf.scene_objects_mask
+                if cf.scene_objects_mask is not None and cf.scene_objects_mask.any()
+                else collision_mod.build_scene_objects_image_mask(
+                    cf.scene_objects, intrinsics, color_bgr.shape[:2]
+                )
+            )
+            manip_mask = masks.manipulator.copy()
+
         return FrameResult(
             overlay=overlay,
             debug_mosaic=debug_mosaic,
@@ -157,4 +183,8 @@ class PerceptionPipeline:
                         else float("inf")),
             focus_part=(cf.worst_focus.part if cf.worst_focus is not None else ""),
             n_objects=len(cf.scene_objects),
+            object_records=cf.object_records,
+            nearest_fk_point=cf.nearest_fk_point,
+            obstacle_mask=obstacle_mask,
+            manip_mask=manip_mask,
         )

@@ -27,6 +27,12 @@ class CollisionFrame:
     worst_level: str = "SAFE"
     worst_focus: object = None
     table_roi: Optional[tuple] = None  # ROI рабочей зоны (px) для отрисовки границы
+    # A4: строки для objects.csv (по кандидату на кадр). Заполняется только при
+    # cfg.enable_objects_log; пишет их раннер, сервис только собирает.
+    object_records: list = field(default_factory=list)
+    # A3: ближайшая к объекту точка FK-скелета (кадр камеры) — по её смещению
+    # между кадрами раннер считает link_speed_m_s для stop_events.csv.
+    nearest_fk_point: Optional[np.ndarray] = None
 
 
 class CollisionService:
@@ -38,6 +44,9 @@ class CollisionService:
                 cfg.collision_log_path, cfg.collision_log_every_n
             )
         self._bbox_geoms: list = []
+        self._confirm_rejects: list = []  # A4: (объект, причина) со стадии подтверждения
+        self._selffilter_warned = False   # однократное предупреждение «FK-самофильтр вхолостую»
+        self._no_spheres_frames = 0       # подряд идущие кадры без FK-сфер
         self._tracks: list = []  # временная устойчивость объектов (анти-мигание протечек руки)
         self._known: list = []   # object-permanence: объекты в памяти (координаты стола)
         self._danger_hold = False  # гистерезис DANGER (анти-дребезг на границе порога)
@@ -116,6 +125,9 @@ class CollisionService:
         used = set()
         n_in = len(scene_objects)       # диагностика: сколько сырых детекций пришло
         n_arm_reject = 0                # сколько отбраковано как «протечка руки»
+        # A4: причины отбраковки на стадии подтверждения (arm_reject/not_confirmed).
+        log_rej = bool(getattr(cfg, "enable_objects_log", False))
+        self._confirm_rejects = []
         for obj in scene_objects:
             c = np.asarray(obj.centroid, dtype=np.float64)
             best_i, best_d = -1, match_m
@@ -142,6 +154,8 @@ class CollisionService:
                     < float(getattr(cfg, "collision_obj_arm_depth_delta_m", 0.03))
                 ):
                     n_arm_reject += 1
+                    if log_rej:
+                        self._confirm_rejects.append((obj, "arm_reject"))
                     continue
                 self._tracks.append({
                     "centroid": c, "hits": 1, "miss": 0, "obj": obj,
@@ -181,6 +195,16 @@ class CollisionService:
                 )
                 if min(d, d_g) <= warn_m:
                     confirmed.append(t["obj"])
+        # A4: кандидаты этого кадра, не дошедшие до подтверждения (трек ещё не
+        # набрал hits и fast-path не сработал). Сопоставление по ИДЕНТИЧНОСТИ
+        # объекта, а не по obj_id: ниже идёт пере-нумерация, а coasting вообще
+        # подставляет объекты прошлых кадров.
+        if log_rej:
+            ok_ids = {id(o) for o in confirmed}
+            rejected_ids = {id(o) for o, _ in self._confirm_rejects}
+            for obj in scene_objects:
+                if id(obj) not in ok_ids and id(obj) not in rejected_ids:
+                    self._confirm_rejects.append((obj, "not_confirmed"))
         # Пере-нумерация: coasting может вернуть объект со «старым» obj_id,
         # совпадающим со свежим — а results ищутся по obj_id.
         for k, obj in enumerate(confirmed):
@@ -198,6 +222,51 @@ class CollisionService:
                     f"confirmed={len(confirmed)} need={need}"
                 )
         return confirmed
+
+    def _build_object_records(self, cf) -> list:
+        """Строки objects.csv (A4) по кадру: кандидаты и финальные объекты.
+
+        Ровно одна строка на рассмотренный объект, без дублей:
+          • отбракованные 2D-гейтами    — причина area/shape/border/pts3d/keepz/span;
+          • отбракованные трекером      — arm_reject / not_confirmed;
+          • дошедшие до оценки          — причина пустая, есть dist_m и level.
+
+        Дистанции и уровня у отбракованных нет по существу: до расчёта они не
+        дожили, поэтому поля остаются пустыми.
+        """
+        rows = [
+            {
+                "obj_id": r.get("obj_id", ""),
+                "area_px": r.get("area_px", ""),
+                "height_m": r.get("height_m"),
+                "dist_m": None,
+                "level": "",
+                "reject_reason": r.get("reject_reason", ""),
+            }
+            for r in collision_mod.pop_candidate_records()
+        ]
+        for obj, reason in self._confirm_rejects:
+            rows.append({
+                "obj_id": "",
+                "area_px": int(self._obj_area(obj)),
+                "height_m": getattr(obj, "height_above_table_m", None),
+                "dist_m": None,
+                "level": "",
+                "reject_reason": reason,
+            })
+        self._confirm_rejects = []
+        by_id = {r.obj_id: r for r in cf.results}
+        for obj in cf.scene_objects:
+            res = by_id.get(obj.obj_id)
+            rows.append({
+                "obj_id": obj.obj_id,
+                "area_px": int(self._obj_area(obj)),
+                "height_m": getattr(obj, "height_above_table_m", None),
+                "dist_m": res.min_dist_m if res is not None else None,
+                "level": res.level if res is not None else "",
+                "reject_reason": "",
+            })
+        return rows
 
     @staticmethod
     def _obj_area(obj):
@@ -412,7 +481,30 @@ class CollisionService:
         # Дистанцию до тела ниже меряем по СЫРОЙ глубинной маске (masks.manipulator),
         # капсула — только чтобы рука не попадала в кандидаты-объекты.
         manip_for_detect = masks.manipulator
+        if bool(getattr(cfg, "collision_fk_self_filter", False)) and not spheres:
+            # Флаг включён, но сфер нет — значит FK недоступен, и капсула руки не
+            # вычитается из кандидатов. Молча это делать нельзя: при высотном
+            # гейте рука сама становится ложным объектом и DANGER залипает
+            # навсегда.
+            # НО: на первых кадрах углов ещё нет по построению — JointAngleReader
+            # читает раз в robot_read_every_n кадров и до первого удачного ответа
+            # отдаёт None. Поэтому ругаемся только когда состояние УСТОЙЧИВОЕ,
+            # иначе предупреждение о реальной поломке тонет в ложном на старте.
+            self._no_spheres_frames += 1
+            if self._no_spheres_frames >= 30 and not self._selffilter_warned:
+                self._selffilter_warned = True
+                print(
+                    "[COLLISION] !!! collision_fk_self_filter=True, но FK-сфер нет "
+                    "(нет углов суставов или T_cr).\n"
+                    "            Капсула руки НЕ вычитается из кандидатов → тёмный "
+                    "хват/запястье пройдут высотный гейт\n"
+                    "            и станут ЛОЖНЫМ объектом вплотную к руке → "
+                    "постоянный DANGER, робот не поедет.\n"
+                    "            Обычная причина: use_robot_kinematics=False в "
+                    "AppConfig либо недоступен контроллер."
+                )
         if bool(getattr(cfg, "collision_fk_self_filter", False)) and spheres:
+            self._no_spheres_frames = 0
             parts = tuple(getattr(cfg, "collision_fk_self_filter_parts", ("gripper", "wrist")))
             pad = int(getattr(cfg, "collision_fk_self_filter_pad_px", 10))
             cap = collision_mod.build_gripper_capsule_mask(
@@ -585,6 +677,21 @@ class CollisionService:
                 else:
                     self._danger_hold = False
                     self._danger_lost = 0
+        # ── A4: строки objects.csv и A3: ближайшая точка FK-скелета ──────────
+        # Обе ветки работают только под своими флагами: при выключенных ни одного
+        # лишнего прохода по объектам в кадре не делается.
+        if bool(getattr(cfg, "enable_objects_log", False)):
+            cf.object_records = self._build_object_records(cf)
+        else:
+            collision_mod.pop_candidate_records()  # не копить буфер вхолостую
+            self._confirm_rejects = []
+        if bool(getattr(cfg, "enable_stop_log", False)) and spheres and cf.worst_focus:
+            focus = next((o for o in cf.scene_objects
+                          if o.obj_id == cf.worst_focus.obj_id), None)
+            if focus is not None and len(focus.points) > 0:
+                _, _, fk_pt = collision_mod.min_distance_to_robot(spheres, focus.points)
+                cf.nearest_fk_point = fk_pt
+
         if self.logger is not None:
             self.logger.update(
                 frame_count, cf.worst_level, cf.worst_focus

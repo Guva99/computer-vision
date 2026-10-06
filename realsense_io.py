@@ -414,6 +414,47 @@ class AppConfig:
     enable_decision_log: bool = False
     decision_log_path: str = "captures/decisions.csv"
     scenario_id: str = ""   # id сценария из scenarios.yaml (попадает в лог)
+
+    # ── Сбор данных для экспериментальной валидации (docs/EXPERIMENTS.md) ─────
+    # Мастер серий: tools/run_experiments.py. ВСЕ флаги ниже по умолчанию ВЫКЛ:
+    # при выключенных флагах ни один объект не создаётся, в горячем цикле не
+    # появляется ни одной лишней ветки с работой — поведение и FPS те же.
+    #
+    # Источник кадров: 'camera' (RealSense) или 'playback' (запись с диска).
+    # Playback нужен, чтобы пересчитывать метрики и делать абляцию без съёмки.
+    source_mode: str = "camera"          # camera | playback
+    playback_path: str = ""              # каталог записи (там frames/, joints.csv, meta.json)
+    playback_fps: float = 0.0            # 0 = максимально быстро; иначе троттлинг
+    # A1. Рекордер: кадры + углы + метаданные. Запись идёт в ФОНОВОМ потоке —
+    # диск не должен тормозить контур безопасности (решение о стопе важнее кадра).
+    enable_recording: bool = False
+    recording_path: str = "captures/recording"
+    recording_queue_max: int = 120       # кадров в очереди writer'а (~185 МБ ОЗУ)
+    recording_put_timeout_s: float = 0.5  # дольше ждать очередь нельзя → кадр теряем
+    recording_compress: bool = False     # npz со сжатием: втрое меньше, но грузит CPU
+    # Только углы, без кадров. Нужно там, где меряется время реакции (Э3):
+    # запись кадров даёт ~7 МБ/с и искажает замер, а тормозной путь считается по
+    # joints.csv через FK — без углов его не получить вовсе.
+    recording_joints_only: bool = False
+    # A3. Лог остановов: задержки detect/stop/total по событию DANGER.
+    enable_stop_log: bool = False
+    stop_log_path: str = "captures/stop_events.csv"
+    stop_poll_interval_s: float = 0.02   # желаемый период опроса контроллера
+    stop_poll_timeout_s: float = 5.0     # сколько ждать остановки, потом сдаёмся
+    stop_still_eps_deg: float = 0.05     # углы «не меняются», если max|Δ| меньше
+    stop_still_samples: int = 3          # столько подряд «тихих» опросов = стоп
+    # A4. Лог объектов: строка на КАЖДОГО рассмотренного кандидата с причиной
+    # отбраковки (area/shape/border/pts3d/keepz/span/arm_reject/not_confirmed).
+    enable_objects_log: bool = False
+    objects_log_path: str = "captures/objects.csv"
+    # A5. Дамп масок для IoU: имена совпадают с tools/annotate.py (gt_masks).
+    dump_masks_every_n: int = 0          # 0 = не сохранять
+    masks_dump_path: str = ""            # пусто → <recording_path>/masks
+    # A6. Снимки оверлея для статьи по клавише p.
+    figures_dir: str = "captures/figures"
+    # Ограничение длительности прогона, сек (0 = до нажатия q). Нужно мастеру
+    # серий: запись сценария должна длиться ровно столько, сколько объявлено.
+    run_duration_s: float = 0.0
     # Debug
     show_debug_masks: bool = True  # нажмите d в окне для toggle или выставьте True здесь
 
@@ -428,6 +469,11 @@ class RealSenseCamera:
         # Фильтры глубины (создаём один раз): применяются ПОСЛЕ align в
         # get_aligned_frames. Заполняют дырки на кубиках → полные маски объектов.
         self._depth_filters = self._build_depth_filters(config)
+        # Рекордер (A1) обязан писать глубину ДО постобработки — иначе на записи
+        # нельзя переиграть сами фильтры при абляции. Копию сырой глубины делаем
+        # только когда запись включена: иначе это лишний memcpy 600 КБ на кадр.
+        self.keep_raw_depth = bool(getattr(config, "enable_recording", False))
+        self.last_raw_depth = None
 
     @staticmethod
     def _build_depth_filters(config) -> list:
@@ -516,6 +562,8 @@ class RealSenseCamera:
             color_frame = aligned_frames.get_color_frame()
             if not depth_frame or not color_frame:
                 return None
+            if self.keep_raw_depth:
+                self.last_raw_depth = np.asanyarray(depth_frame.get_data()).copy()
             # Пост-обработка глубины (spatial + hole_filling): заполнить дырки на
             # кубиках. После align — чтобы не терять выравнивание к цвету. При сбое
             # фильтра берём сырую глубину (не роняем кадр).

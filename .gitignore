@@ -5,10 +5,30 @@ __pycache__/
 .venv/
 venv/
 
-# Logs / captures
+# Logs
 *.log
-captures/
 downloads/
+
+# ── Данные экспериментов (captures/) ─────────────────────────────────────────
+# Каталог НЕ игнорируется целиком: отчёты, метрики, CSV-логи, калибровка,
+# снимки для статьи и дампы масок обязаны попадать в репозиторий (см.
+# docs/EXPERIMENTS.md, «Что попадает в репозиторий»). Игнорируем только сырое:
+# кадры весят ~1.5 МБ штука, полная серия — десятки гигабайт.
+captures/**/frames/
+captures/**/*.npz
+captures/**/*.ply
+# Состояние сессии мастера — не артефакт: что и когда запускалось, видно из
+# captures/EXPERIMENT_REPORT.md, а этот файл живёт только между --resume.
+captures/progress.json
+
+# Диагностические прогоны и дампы масок, созданные при разборе: пересоздаются
+# из записей через source_mode='playback', в репозиторий не нужны.
+captures/_diag/
+captures/_smoke/
+captures/_s1_motion/
+
+# Архив 2D-метода (162 МБ) — распакован рядом в cv_2d_method/
+cv_2d_method.zip
 
 # Local Claude config
 .claude/
@@ -28,6 +48,9 @@ nul
 
 # Benchmark / analysis artifacts (сгенерированные, в репозиторий не кладём)
 *.png
+# ...кроме материалов экспериментов: дампы масок для IoU и снимки для статьи.
+# Внутри captures/**/frames/ это не действует — исключённый каталог не обходится.
+!captures/**/*.png
 cloud_point/iter0/
 cloud_point/iter1/
 cloud_point/iter2/

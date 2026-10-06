@@ -15,12 +15,18 @@ Workflow
   1. Run:  python calibrate_click_fk.py
   2. Put the robot in a pose.
   3. CLICK on a visible joint centre in the image.
-  4. Press the joint key:  1=J1 2=J2 3=J3 4=J4 5=J5 6=J6  t=TCP
+  4. Press the target key:  3=ELBOW  5=WRIST  6=FLANGE  t=TOOLTIP  1=SHOULDER
+     Клавиши 2 и 4 убраны: см. комментарий к _KEY_TO_JOINT. Подписи названы
+     по ФИЗИЧЕСКОМУ месту, а не по номеру оси — номер оси путает: FK-точка
+     «J2» это локоть, «J4» совпадает с запястьем.
      → angles are read from the robot, that joint's 3D point is stored.
   5. Click several joints per pose (different heights!). Rotate A1, repeat.
   6. Collect ≥15 points across heights → press  c  to solve & save.
 
-Keys: 1-6/t = assign joint   c = solve & save   d = delete last   r = reset   q = quit
+Keys: 3,5,6,t (+1 once) = assign   c = solve & save   d = delete last   r = reset   q = quit
+
+Повторяющиеся 3D-точки отклоняются автоматически ([DUP]): один объектный пункт
+не может проецироваться в два пикселя, PnP от этого разваливается.
 
 If robot not connected:  python calibrate_click_fk.py --no-robot
   (after the joint key you type the 6 joint angles in the terminal)
@@ -59,17 +65,36 @@ except ImportError:
 
 # fk_joints returns [base(0), J1(1), J2(2), J3(3), J4(4), J5(5), J6(6), TCP(last)]
 # Key → (joint index in fk_joints output, label). TCP uses -1 = last point (tip).
+#
+# J4 СОЗНАТЕЛЬНО ОТСУТСТВУЕТ. У KR4 запястье сферическое: в DH-таблице у звена 5
+# a = 0 и d = 0, то есть переход J4→J5 — чистый поворот без переноса, и начала
+# их систем координат совпадают ТОЧНО (проверено: разница 0.000 мм в любой позе).
+# Клик по «J4» и клик по «J5» дают разные пиксели и одну 3D-точку — для PnP это
+# утверждение «одна точка видна в двух местах кадра», неразрешимое противоречие,
+# которое решатель размазывает по всем остальным точкам. Именно так была
+# испорчена калибровка с RMS 21 px и 7 инлайерами из 12.
 _KEY_TO_JOINT = {
-    ord("1"): (1, "J1"),
-    ord("2"): (2, "J2"),
-    ord("3"): (3, "J3"),
-    ord("4"): (4, "J4"),
-    ord("5"): (5, "J5"),
-    ord("6"): (6, "J6"),
-    ord("t"): (-1, "TCP"),
+    ord("1"): (1, "SHOULDER"),   # верх колонны, (0,0,330) — ставить ОДИН раз за сессию
+    ord("3"): (3, "ELBOW"),      # локоть
+    ord("5"): (5, "WRIST"),      # центр запястья (внутри корпуса)
+    ord("6"): (6, "FLANGE"),     # плоскость фланца
+    ord("t"): (-1, "TOOLTIP"),   # кончик инструмента (зависит от --gripper-length-mm)
 }
 
-_WINDOW = "Calibration  [CLICK joint -> press 1-6/t | c=solve | d=del | r=reset | q=quit]"
+# Клавиши, убранные СОЗНАТЕЛЬНО, и почему (проверено на стенде 2026-09-30):
+#   2 (бывш. J2) — FK-точка «J2» это ЛОКОТЬ, а не плечо: она в 290 мм от оси
+#     плеча по плечевому звену (a2=290). Оператор естественно кликает плечо и
+#     промахивается на ~160 px системно во всех позах. Локоть уже даёт клавиша 3
+#     (они отстоят на a3=20 мм — в кадре это ~10 px, различить кликом нельзя).
+#   4 (бывш. J4) — у KR4 запястье сферическое (у звена 5 a=0 и d=0), начало J4
+#     совпадает с J5 ТОЧНО. Два клика в разных местах кадра на одну 3D-точку —
+#     неразрешимое противоречие для PnP.
+# Именно эти две пары дали калибровку с RMS 21 px и 7 инлайерами из 12.
+
+# Порог совпадения 3D-точек (м). Две точки ближе этого — одна и та же.
+_DUP_EPS_M = 0.001
+
+_WINDOW = "Calibration  [CLICK -> 3=elbow 5=wrist 6=flange t=tip | c=solve | d=del | r=reset | q=quit]"
 
 
 # ── state ─────────────────────────────────────────────────────────────────────
@@ -175,6 +200,54 @@ def _joint_3d(angles_deg: np.ndarray, joint_idx: int, gripper_m: float) -> np.nd
 
 # ── solve & save ──────────────────────────────────────────────────────────────
 
+def _holdout_error(obj: np.ndarray, img: np.ndarray, cam_mat: np.ndarray,
+                   dist: np.ndarray) -> Optional[dict]:
+    """Ошибка на отложенных точках (leave-one-out), в пикселях и миллиметрах.
+
+    Зачем отдельно от RMS. RMS считается по тем же точкам, на которых решалась
+    задача, — она показывает, насколько хорошо модель подогналась, а не какую
+    ошибку даст НОВАЯ точка. Для статьи нужна вторая величина: каждая точка по
+    очереди исключается, поза решается по остальным, ошибка меряется на
+    исключённой. Это и есть заявляемая точность пересчёта камера→база.
+
+    Перевод в миллиметры: err_mm = err_px · z / fx, где z — глубина точки в
+    кадре камеры. Пиксель на расстоянии z «стоит» z/fx метров, поэтому ошибка
+    репроекции переводится в поперечную ошибку положения именно так.
+    """
+    n = len(obj)
+    if n < 6:  # на 5 точках PnP вырождается, hold-out теряет смысл
+        return None
+    errs_px, errs_mm = [], []
+    fx = float(cam_mat[0, 0])
+    for i in range(n):
+        keep = np.ones(n, dtype=bool)
+        keep[i] = False
+        ok, r_vec, t_vec = cv2.solvePnP(
+            obj[keep], img[keep], cam_mat, dist, flags=cv2.SOLVEPNP_ITERATIVE,
+        )
+        if not ok:
+            continue
+        proj, _ = cv2.projectPoints(obj[i:i + 1], r_vec, t_vec, cam_mat, dist)
+        err_px = float(np.linalg.norm(proj.reshape(2) - img[i]))
+        # Глубина отложенной точки в кадре камеры при этой позе.
+        R, _ = cv2.Rodrigues(r_vec)
+        z = float((R @ obj[i] + t_vec.flatten())[2])
+        errs_px.append(err_px)
+        errs_mm.append(err_px * z / fx * 1000.0)
+    if not errs_px:
+        return None
+    a_px = np.asarray(errs_px)
+    a_mm = np.asarray(errs_mm)
+    return {
+        "n": int(len(a_px)),
+        "rms_px": float(np.sqrt(np.mean(a_px ** 2))),
+        "rms_mm": float(np.sqrt(np.mean(a_mm ** 2))),
+        "median_mm": float(np.median(a_mm)),
+        "max_mm": float(a_mm.max()),
+        "method": "leave-one-out solvePnP, err_mm = err_px * z / fx",
+    }
+
+
 def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
     n = len(_img_pts)
     if n < 4:
@@ -218,7 +291,15 @@ def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
     proj, _ = cv2.projectPoints(obj, r_vec, t_vec, cam_mat, dist)
     rms = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - img) ** 2, axis=1))))
 
+    holdout = _holdout_error(obj, img, cam_mat, dist)
+
     print(f"\n[OK] RMS = {rms:.2f} px   inliers = {n_inl}/{n}")
+    if holdout:
+        print(f"     Hold-out (leave-one-out, {holdout['n']} точек): "
+              f"{holdout['rms_px']:.2f} px = {holdout['rms_mm']:.1f} мм   "
+              f"(медиана {holdout['median_mm']:.1f} мм, максимум {holdout['max_mm']:.1f} мм)")
+        print("     Это и есть заявленная точность пересчёта камера→база: RMS выше "
+              "считается на тех же точках, на которых решалась задача.")
     print(f"     t_vec = {np.round(t_vec.flatten(), 4)}")
     print("     T_cr =\n", np.round(T_cr, 5))
 
@@ -230,6 +311,7 @@ def _solve_and_save(out_path: Path, intrinsics: dict) -> bool:
         "n_points": n,
         "n_inliers": n_inl,
         "z_span_mm": z_span_mm,
+        "holdout": holdout,
         "method": "solvePnPRansac+RefineLM/multi-joint",
         "intrinsics": intrinsics,
     }, indent=2))
@@ -261,7 +343,7 @@ def _draw(frame, pending_uv, robot_connected) -> np.ndarray:
         cv2.line(out, (x, y - 14), (x, y + 14), (0, 130, 255), 2)
         cv2.circle(out, (x, y), 8, (0, 130, 255), 2)
         cv2.rectangle(out, (0, 30), (out.shape[1], 58), (0, 0, 0), -1)
-        cv2.putText(out, "Press joint key:  1=J1 2=J2 3=J3 4=J4 5=J5 6=J6  t=TCP",
+        cv2.putText(out, "Press:  3=ELBOW  5=WRIST  6=FLANGE  t=TIP  1=SHOULDER",
                     (8, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 180, 255), 1, cv2.LINE_AA)
 
     # legend + counter (с разбивкой по высоте)
@@ -269,8 +351,9 @@ def _draw(frame, pending_uv, robot_connected) -> np.ndarray:
     z_hint = ""
     if n >= 2:
         zs = np.array([p[2] for p in _obj_pts]) * 1000.0
-        z_hint = f"  Z-разброс={zs.max()-zs.min():.0f}мм"
-    hint = f"{n} pts{z_hint}  |  1-6/t=assign  c=solve  d=del  r=reset  q=quit"
+        # cv2.putText умеет только ASCII: кириллица рисуется знаками вопроса.
+        z_hint = f"  Zspread={zs.max()-zs.min():.0f}mm"
+    hint = f"{n} pts{z_hint}  |  3,5,6,t=assign  c=solve  d=del  r=reset  q=quit"
     cv2.rectangle(out, (0, out.shape[0] - 24), (out.shape[1], out.shape[0]), (0, 0, 0), -1)
     cv2.putText(out, hint, (8, out.shape[0] - 7),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 220, 0), 1, cv2.LINE_AA)
@@ -324,7 +407,11 @@ def main():
     cv2.setMouseCallback(_WINDOW, _mouse_cb)
 
     print("\n=== Multi-Joint Extrinsic Calibration ===")
-    print("► Кликни на сустав в кадре → нажми клавишу: 1=J1 2=J2 3=J3 4=J4 5=J5 6=J6 t=TCP")
+    print("► Кликни на МЕСТО в кадре → нажми клавишу:")
+    print("     3 = ЛОКОТЬ     5 = ЦЕНТР ЗАПЯСТЬЯ     6 = ФЛАНЕЦ     t = КОНЧИК ХВАТА")
+    print("     1 = ВЕРХ КОЛОННЫ (ось плеча) — ставить ОДИН раз за всю сессию")
+    print("► Клавиши 2 и 4 убраны: FK-точка «J2» это локоть, «J4» совпадает с запястьем")
+    print("► Целься в ЦЕНТР сочленения (он ВНУТРИ корпуса), а не в видимую кромку")
     print("► Кликай РАЗНЫЕ суставы (разная высота!): J2/J3 верх, J5/J6 середина, TCP низ")
     print("► Набери >=15 точек по высотам → c = solve & save\n")
 
@@ -350,6 +437,12 @@ def main():
                 _img_pts.pop(); _obj_pts.pop()
                 lbl = _labels.pop()
                 print(f"[DELETE] removed {lbl}; {len(_img_pts)} remain.")
+        elif key == ord("4"):
+            print("[SKIP] Клавиша 4 убрана: у KR4 запястье сферическое, эта точка "
+                  "совпадает с 5 (ЗАПЯСТЬЕ). Нажми 5.")
+        elif key == ord("2"):
+            print("[SKIP] Клавиша 2 убрана: FK-точка «J2» это ЛОКОТЬ (290 мм от оси "
+                  "плеча), а не плечо. Локоть — клавиша 3 (ELBOW).")
         elif key == ord("c"):
             _solve_and_save(out_path, intrinsics)
         elif key in _KEY_TO_JOINT:
@@ -374,6 +467,22 @@ def main():
                 p3d = _joint_3d(angles, joint_idx, gripper_m)
             except Exception as e:
                 print(f"[FK ERROR] {e}")
+                _pending_click = None
+                continue
+
+            # Страховка от противоречивых точек: если такая 3D-координата уже
+            # набрана, добавлять нельзя — один и тот же объектный пункт не может
+            # проецироваться в два разных пикселя. Ловит и совпадающие суставы, и
+            # повторный клик по J1 (он всегда (0, 0, 330) и от позы не зависит).
+            dup = next(
+                (i for i, q in enumerate(_obj_pts)
+                 if float(np.linalg.norm(np.asarray(q) - p3d)) < _DUP_EPS_M),
+                None,
+            )
+            if dup is not None:
+                print(f"[DUP] {joint_name}: 3D-точка совпадает с уже набранной "
+                      f"{_labels[dup]} (P{dup + 1}) — НЕ добавлено. Для PnP это "
+                      f"противоречие: одна точка пространства в двух пикселях.")
                 _pending_click = None
                 continue
 

@@ -65,6 +65,11 @@ class JointAngleReader:
             print("\n[INFO] Camera only (robot angles off)")
         return self
 
+    @property
+    def last_angles(self) -> Optional[Tuple[float, ...]]:
+        """Последние прочитанные углы (нужны рекордеру для joints.csv)."""
+        return self._last_joint_angles
+
     def read(self, frame_count: int) -> Optional[Tuple[float, ...]]:
         """Читать углы WITHOUT блокировки цикла камеры.
 

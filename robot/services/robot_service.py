@@ -100,6 +100,7 @@ class RobotService:
 
             print(f"Robot connected: {self._driver.name}")
             print(f"Base: {self.base}, Tool: {self.tool}, Speed: {self.speed}%")
+            self._check_ready_to_move()
             print(f"{'=' * 60}\n")
             
             self._connected = True
@@ -297,6 +298,48 @@ class RobotService:
     # ЦИКЛ ДВИЖЕНИЯ ВЛЕВО-ВПРАВО
     # =========================================================================
     
+    def _check_ready_to_move(self) -> bool:
+        """Проверить, может ли робот физически двигаться, и сказать об этом вслух.
+
+        Без этой проверки приложение бодро печатает «home OK → start_cycle»,
+        команды уходят в COM_CASEVAR, а робот стоит — потому что пульт в T1 или
+        override нулевой. Снаружи это неотличимо от бага в детекции, и время
+        уходит не туда. Для серии экспериментов цена ошибки выше: получится
+        «прогон», в котором рука не двигалась, и выяснится это только на разборе.
+
+        Только читает, ничего не меняет: режим переключается на пульте.
+        """
+        ok = True
+        try:
+            raw = self._connection.read("$MODE_OP", False)
+            mode = raw.decode().strip() if raw else "?"
+        except Exception:
+            mode = "?"
+        try:
+            raw = self._connection.read("$OV_PRO", False)
+            ov = raw.decode().strip() if raw else "?"
+        except Exception:
+            ov = "?"
+        print(f"Режим пульта: {mode}   $OV_PRO: {ov}")
+        if "AUT" not in mode.upper() and "EX" not in mode.upper():
+            print(f"  [!] Режим {mode}: программа KRL по внешним командам не пойдёт. "
+                  f"Движения не будет.\n"
+                  f"      На пульте: переключить в AUT и запустить программу.")
+            ok = False
+        try:
+            if float(ov.replace("#", "") or 0) <= 0.0:
+                print("  [!] $OV_PRO = 0: скорость программы нулевая, робот не "
+                      "поедет даже в AUT.\n"
+                      "      Обычно это остаток от предыдущего аварийного стопа "
+                      "(stop_movement пишет 0,\n"
+                      "      а resume срабатывает только по переходу DANGER→SAFE "
+                      "и после перезапуска не вызывается).\n"
+                      "      Поднять override на пульте или перезапустить цикл.")
+                ok = False
+        except ValueError:
+            pass
+        return ok
+
     def start_cycle_movement(
         self,
         on_position_reached: Optional[Callable[[str, list], None]] = None
@@ -332,11 +375,20 @@ class RobotService:
             idx = 0
             step = 1
             direction = 'right'  # для режима left/right
+            _paused_log_t = 0.0  # троттлинг сообщения о паузе
 
             while not self._cycle_stop_event.is_set():
                 # Проверяем паузу
                 with self._pause_lock:
                     if self._paused:
+                        # Пауза обязана быть слышна: молчащий спин здесь
+                        # неотличим от «цикл вообще не запустился», и оператор
+                        # ищет причину не там. Печатаем раз в 3 секунды.
+                        _now = time.time()
+                        if _now - _paused_log_t > 3.0:
+                            _paused_log_t = _now
+                            print("[CYCLE] Пауза: движение остановлено по коллизии, "
+                                  "жду снятия DANGER (resume_movement)")
                         time.sleep(0.1)
                         continue
 
