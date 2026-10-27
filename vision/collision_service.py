@@ -63,20 +63,20 @@ class CollisionService:
         """ROI рабочей зоны в пикселях: из table_plane.json (roi_px) или конфига.
         Вне ROI (провод, база робота, фон) детекция не идёт. Камера неподвижна →
         зона фиксирована, от T_cr не зависит."""
-        if not bool(getattr(self.cfg, "collision_obj_roi_gate", False)):
+        if not bool(self.cfg.collision_obj_roi_gate):
             self._table_roi = None
             return
         # json-ROI из калибровки имеет приоритет; иначе — дефолт из конфига.
         if self._table_roi is None:
-            self._table_roi = tuple(getattr(self.cfg, "collision_obj_roi_px", ()))
+            self._table_roi = tuple(self.cfg.collision_obj_roi_px)
         if self._table_roi:
             print(f"[COLLISION] ROI рабочей зоны (px): {tuple(self._table_roi)}")
 
     def _load_table_plane(self):
         """Загрузить (a,b,c,d) из table_plane.json или None (→ фолбэк на цвет)."""
-        if not bool(getattr(self.cfg, "collision_obj_plane_gate", False)):
+        if not bool(self.cfg.collision_obj_plane_gate):
             return None
-        path = Path(getattr(self.cfg, "table_plane_path", "table_plane.json"))
+        path = Path(self.cfg.table_plane_path)
         if not path.exists():
             print(f"[COLLISION] table_plane.json не найден ({path}) — цвет-гейт (фолбэк). "
                   f"Запусти calibrate_table_plane.py.")
@@ -126,7 +126,7 @@ class CollisionService:
         n_in = len(scene_objects)       # диагностика: сколько сырых детекций пришло
         n_arm_reject = 0                # сколько отбраковано как «протечка руки»
         # A4: причины отбраковки на стадии подтверждения (arm_reject/not_confirmed).
-        log_rej = bool(getattr(cfg, "enable_objects_log", False))
+        log_rej = bool(cfg.enable_objects_log)
         self._confirm_rejects = []
         for obj in scene_objects:
             c = np.asarray(obj.centroid, dtype=np.float64)
@@ -148,10 +148,10 @@ class CollisionService:
                 # Анти-протечка: прилипший к руке и совпадающий с ней по глубине
                 # кандидат — пиксели самой руки; трек не создаём.
                 if (
-                    bool(getattr(cfg, "collision_obj_arm_depth_reject", True))
+                    bool(cfg.collision_obj_arm_depth_reject)
                     and getattr(obj, "touches_arm", False)
                     and getattr(obj, "arm_depth_delta_m", float("inf"))
-                    < float(getattr(cfg, "collision_obj_arm_depth_delta_m", 0.03))
+                    < float(cfg.collision_obj_arm_depth_delta_m)
                 ):
                     n_arm_reject += 1
                     if log_rej:
@@ -170,12 +170,12 @@ class CollisionService:
         # рука, перекрывшая башню на несколько кадров, не должна её «убивать».
         need = int(cfg.collision_persist_frames)
         max_miss = int(cfg.collision_track_max_miss)
-        max_miss_conf = int(getattr(cfg, "collision_track_max_miss_confirmed", 15))
+        max_miss_conf = int(cfg.collision_track_max_miss_confirmed)
         self._tracks = [
             t for t in self._tracks
             if t["miss"] <= (max_miss_conf if t["hits"] >= need else max_miss)
         ]
-        need_near = int(getattr(cfg, "collision_persist_frames_near", 2))
+        need_near = int(cfg.collision_persist_frames_near)
         warn_m = float(cfg.collision_warn_dist_m)
         confirmed = []
         for t in self._tracks:
@@ -211,7 +211,7 @@ class CollisionService:
             obj.obj_id = k
         # Диагностика потери объекта у руки: печатаем, когда были сырые детекции,
         # но ни одна не подтвердилась (или что-то отбраковано как протечка руки).
-        if bool(getattr(cfg, "collision_obj_debug_reject", False)):
+        if bool(cfg.collision_obj_debug_reject):
             self._confirm_dbg_count = getattr(self, "_confirm_dbg_count", 0) + 1
             n_touch = sum(1 for o in scene_objects if getattr(o, "touches_arm", False))
             if n_in > 0 and (len(confirmed) == 0 or n_arm_reject > 0
@@ -287,11 +287,11 @@ class CollisionService:
         (вложенные рамки) + 3D-близости, оставляем более полную запись.
         """
         cfg = self.cfg
-        if not bool(getattr(cfg, "collision_perm_dedup", True)) or len(self._known) < 2:
+        if not bool(cfg.collision_perm_dedup) or len(self._known) < 2:
             return
-        iou_t = float(getattr(cfg, "collision_perm_dedup_iou", 0.10))
-        con_t = float(getattr(cfg, "collision_perm_dedup_contain", 0.30))
-        max_m = float(getattr(cfg, "collision_perm_dedup_m", 0.15))
+        iou_t = float(cfg.collision_perm_dedup_iou)
+        con_t = float(cfg.collision_perm_dedup_contain)
+        max_m = float(cfg.collision_perm_dedup_m)
         keep: list = []
         for k in self._known:
             dup_of = -1
@@ -333,11 +333,11 @@ class CollisionService:
         (отсутствие детекции ≠ отсутствие объекта). Под рукой не стареем к удалению.
         """
         cfg = self.cfg
-        match_m = float(getattr(cfg, "collision_perm_match_m", 0.06))
-        clear_frames = int(getattr(cfg, "collision_perm_clear_frames", 10))
-        win = int(getattr(cfg, "collision_perm_window_px", 9))
-        occ_frac = float(getattr(cfg, "collision_perm_occ_frac", 0.4))
-        keep_fullest = bool(getattr(cfg, "collision_perm_keep_fullest", True))
+        match_m = float(cfg.collision_perm_match_m)
+        clear_frames = int(cfg.collision_perm_clear_frames)
+        win = int(cfg.collision_perm_window_px)
+        occ_frac = float(cfg.collision_perm_occ_frac)
+        keep_fullest = bool(cfg.collision_perm_keep_fullest)
         h, w = int(image_shape[0]), int(image_shape[1])
         fx = float(intrinsics["fx"]); fy = float(intrinsics["fy"])
         cx = float(intrinsics["cx"]); cy = float(intrinsics["cy"])
@@ -358,7 +358,7 @@ class CollisionService:
 
         # 1) сопоставить наблюдения этого кадра с известными по 3D-центроиду
         used = set()
-        match_k = float(getattr(cfg, "collision_perm_match_depth_k", 0.03))
+        match_k = float(cfg.collision_perm_match_depth_k)
         for obj in observations:
             c = np.asarray(obj.centroid, dtype=np.float64)
             # Радиус сопоставления растёт с дальностью: шум глубины ~z, у дальнего
@@ -402,7 +402,7 @@ class CollisionService:
             h_img = np.full(h * w, np.nan, dtype=np.float32)
             h_img[valid_flat] = hh.astype(np.float32)
             h_img = h_img.reshape(h, w)
-        gate_min = float(getattr(cfg, "collision_obj_plane_height_min_m", 0.04))
+        gate_min = float(cfg.collision_obj_plane_height_min_m)
 
         survivors = []
         for i, k in enumerate(self._known):
@@ -446,7 +446,7 @@ class CollisionService:
         # Диагностика слоя памяти: видно, держит ли он объект под рукой и не
         # отпускает ли раньше времени (obs=сколько пришло подтверждённых детекций,
         # known=записей в памяти, occ=перекрыто рукой, empty=счётчики «видно и пусто»).
-        if bool(getattr(cfg, "collision_obj_debug_reject", False)):
+        if bool(cfg.collision_obj_debug_reject):
             self._perm_dbg = getattr(self, "_perm_dbg", 0) + 1
             if self._perm_dbg % 5 == 0 or len(observations) != len(out):
                 n_occ = sum(1 for k in self._known if _occluded(k["centroid"]))
@@ -481,7 +481,7 @@ class CollisionService:
         # Дистанцию до тела ниже меряем по СЫРОЙ глубинной маске (masks.manipulator),
         # капсула — только чтобы рука не попадала в кандидаты-объекты.
         manip_for_detect = masks.manipulator
-        if bool(getattr(cfg, "collision_fk_self_filter", False)) and not spheres:
+        if bool(cfg.collision_fk_self_filter) and not spheres:
             # Флаг включён, но сфер нет — значит FK недоступен, и капсула руки не
             # вычитается из кандидатов. Молча это делать нельзя: при высотном
             # гейте рука сама становится ложным объектом и DANGER залипает
@@ -503,10 +503,10 @@ class CollisionService:
                     "            Обычная причина: use_robot_kinematics=False в "
                     "AppConfig либо недоступен контроллер."
                 )
-        if bool(getattr(cfg, "collision_fk_self_filter", False)) and spheres:
+        if bool(cfg.collision_fk_self_filter) and spheres:
             self._no_spheres_frames = 0
-            parts = tuple(getattr(cfg, "collision_fk_self_filter_parts", ("gripper", "wrist")))
-            pad = int(getattr(cfg, "collision_fk_self_filter_pad_px", 10))
+            parts = tuple(cfg.collision_fk_self_filter_parts)
+            pad = int(cfg.collision_fk_self_filter_pad_px)
             cap = collision_mod.build_gripper_capsule_mask(
                 spheres, intrinsics, color_bgr.shape[:2], pad_px=pad, parts=parts
             )
@@ -535,7 +535,7 @@ class CollisionService:
         # Workspace-фильтр: объект вне рабочей зоны (в базе робота) — не объект
         # для коллизий (профиль ограждения, стенки, фон за столом).
         if (
-            bool(getattr(cfg, "collision_workspace_filter", False))
+            bool(cfg.collision_workspace_filter)
             and fk_projector.T_cr is not None
             and cf.scene_objects
         ):
@@ -585,13 +585,13 @@ class CollisionService:
         # → «до руки» ≈ 0 → ложный DANGER «arm» на кубике вдали от руки. Выкидываем
         # насыщенные пиксели из тела (T_cr-независимо, реальную руку не трогает).
         if (
-            bool(getattr(cfg, "collision_body_color_clean", True))
+            bool(cfg.collision_body_color_clean)
             and color_bgr is not None
             and np.any(manip_sel)
         ):
             sat = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)[:, :, 1]
             sat_manip = sat.reshape(-1)[valid_flat][manip_sel]
-            sat_max = int(getattr(cfg, "collision_body_sat_max", 70))
+            sat_max = int(cfg.collision_body_sat_max)
             keep_desat = sat_manip < sat_max
             if np.count_nonzero(keep_desat) > 20:
                 manip_pts = manip_pts[keep_desat]
@@ -601,11 +601,11 @@ class CollisionService:
         if (
             self._table_plane is not None
             and len(manip_pts) > 0
-            and bool(getattr(cfg, "collision_body_plane_clean", True))
+            and bool(cfg.collision_body_plane_clean)
         ):
             pa, pb, pc, pd = (float(v) for v in np.asarray(self._table_plane).ravel()[:4])
             body_h = manip_pts[:, 0] * pa + manip_pts[:, 1] * pb + manip_pts[:, 2] * pc + pd
-            keep_body = body_h > float(getattr(cfg, "collision_body_plane_min_height_m", 0.03))
+            keep_body = body_h > float(cfg.collision_body_plane_min_height_m)
             if np.count_nonzero(keep_body) > 20:
                 manip_pts = manip_pts[keep_body]
         body_ds = collision_mod._voxel_down(manip_pts, cfg.collision_body_voxel_m)
@@ -618,7 +618,7 @@ class CollisionService:
         # Object permanence: удержать объект в памяти сквозь перекрытие рукой
         # (мёртвая зона у руки, где гейт площади ронял объект → ложный SAFE).
         # occ_mask = manip_for_detect (рука + FK-капсула) — тест «под рукой».
-        if bool(getattr(cfg, "collision_object_permanence", True)):
+        if bool(cfg.collision_object_permanence):
             cf.scene_objects = self._update_permanence(
                 cf.scene_objects, manip_for_detect, points, valid_flat,
                 intrinsics, color_bgr.shape[:2],
@@ -626,11 +626,11 @@ class CollisionService:
         # Дедуп финальных объектов: слить перекрывающиеся боксы (фрагменты кубика
         # + призраки-коастинг трекера на старом месте). После трекера, чтобы
         # ловить оба источника дублей. Слияние точек лишь уточняет дистанцию.
-        if bool(getattr(cfg, "collision_obj_merge_overlap", True)) and len(cf.scene_objects) > 1:
+        if bool(cfg.collision_obj_merge_overlap) and len(cf.scene_objects) > 1:
             cf.scene_objects = collision_mod._merge_overlapping_objects(
                 cf.scene_objects,
-                float(getattr(cfg, "collision_obj_merge_iou", 0.15)),
-                float(getattr(cfg, "collision_obj_merge_contain", 0.4)),
+                float(cfg.collision_obj_merge_iou),
+                float(cfg.collision_obj_merge_contain),
             )
         # Растеризация точек объектов нужна только для debug-мозаики
         # (Python-цикл по точкам — дорого). Строим лишь когда показываем debug.
@@ -661,7 +661,7 @@ class CollisionService:
         elif self._danger_hold:
             d_min = min((r.min_dist_m for r in cf.results), default=float("inf"))
             if np.isfinite(d_min):
-                if d_min <= float(getattr(cfg, "collision_danger_exit_dist_m", 0.10)):
+                if d_min <= float(cfg.collision_danger_exit_dist_m):
                     cf.worst_level = "DANGER"
                     self._danger_lost = 0
                 else:
@@ -670,7 +670,7 @@ class CollisionService:
             else:
                 # Опасный объект ПРОПАЛ (мигание/перекрытие рукой), а не отъехал:
                 # держим DANGER ещё N кадров — робот не рвётся к «исчезнувшей» башне.
-                lost_hold = int(getattr(cfg, "collision_danger_lost_hold_frames", 5))
+                lost_hold = int(cfg.collision_danger_lost_hold_frames)
                 self._danger_lost += 1
                 if self._danger_lost <= lost_hold:
                     cf.worst_level = "DANGER"
@@ -680,12 +680,12 @@ class CollisionService:
         # ── A4: строки objects.csv и A3: ближайшая точка FK-скелета ──────────
         # Обе ветки работают только под своими флагами: при выключенных ни одного
         # лишнего прохода по объектам в кадре не делается.
-        if bool(getattr(cfg, "enable_objects_log", False)):
+        if bool(cfg.enable_objects_log):
             cf.object_records = self._build_object_records(cf)
         else:
             collision_mod.pop_candidate_records()  # не копить буфер вхолостую
             self._confirm_rejects = []
-        if bool(getattr(cfg, "enable_stop_log", False)) and spheres and cf.worst_focus:
+        if bool(cfg.enable_stop_log) and spheres and cf.worst_focus:
             focus = next((o for o in cf.scene_objects
                           if o.obj_id == cf.worst_focus.obj_id), None)
             if focus is not None and len(focus.points) > 0:

@@ -2,3 +2,6 @@ numpy
 open3d
 pyrealsense2
 opencv-contrib-python
+pyyaml    # матрица сценариев (tools/run_experiments.py)
+psutil    # мониторинг CPU/RAM (app/perf_monitor.py)
+pytest    # тесты и регрессия (tests/, scripts/check.ps1)

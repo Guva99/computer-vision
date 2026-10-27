@@ -125,10 +125,10 @@ class StopWatcher:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.interval = float(getattr(cfg, "stop_poll_interval_s", 0.02))
-        self.timeout = float(getattr(cfg, "stop_poll_timeout_s", 5.0))
-        self.eps_deg = float(getattr(cfg, "stop_still_eps_deg", 0.05))
-        self.need_still = max(2, int(getattr(cfg, "stop_still_samples", 3)))
+        self.interval = float(cfg.stop_poll_interval_s)
+        self.timeout = float(cfg.stop_poll_timeout_s)
+        self.eps_deg = float(cfg.stop_still_eps_deg)
+        self.need_still = max(2, int(cfg.stop_still_samples))
         self._robot = None
         self.source = "none"
         self._connect()
@@ -254,10 +254,9 @@ class StopEventLogger:
 
     def __init__(self, cfg, csv_path: Optional[str] = None, scenario_id: str = ""):
         self.cfg = cfg
-        self.path = Path(csv_path or getattr(cfg, "stop_log_path",
-                                             "captures/stop_events.csv"))
+        self.path = Path(csv_path or cfg.stop_log_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.scenario_id = str(scenario_id or getattr(cfg, "scenario_id", "") or "")
+        self.scenario_id = str(scenario_id or cfg.scenario_id or "")
         self.events: list = []
         self.watcher = StopWatcher(cfg)
 

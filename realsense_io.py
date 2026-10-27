@@ -477,27 +477,27 @@ class RealSenseCamera:
         # Рекордер (A1) обязан писать глубину ДО постобработки — иначе на записи
         # нельзя переиграть сами фильтры при абляции. Копию сырой глубины делаем
         # только когда запись включена: иначе это лишний memcpy 600 КБ на кадр.
-        self.keep_raw_depth = bool(getattr(config, "enable_recording", False))
+        self.keep_raw_depth = bool(config.enable_recording)
         self.last_raw_depth = None
 
     @staticmethod
     def _build_depth_filters(config) -> list:
-        if not bool(getattr(config, "depth_filters_enabled", True)):
+        if not bool(config.depth_filters_enabled):
             return []
         filters = []
         spatial = rs.spatial_filter()
         try:
             spatial.set_option(
-                rs.option.holes_fill, int(getattr(config, "depth_spatial_holes_fill", 2))
+                rs.option.holes_fill, int(config.depth_spatial_holes_fill)
             )
         except Exception:
             pass
         filters.append(spatial)
-        if bool(getattr(config, "depth_hole_filling", True)):
+        if bool(config.depth_hole_filling):
             hole = rs.hole_filling_filter()
             try:
                 hole.set_option(
-                    rs.option.holes_fill, int(getattr(config, "depth_hole_filling_mode", 1))
+                    rs.option.holes_fill, int(config.depth_hole_filling_mode)
                 )
             except Exception:
                 pass
@@ -523,16 +523,16 @@ class RealSenseCamera:
         который выдумывает глубину из соседей и топил стопку фоном).
         """
         cfg = self.config
-        if not bool(getattr(cfg, "depth_sensor_tune", True)):
+        if not bool(cfg.depth_sensor_tune):
             return
-        if bool(getattr(cfg, "depth_high_density", True)):
+        if bool(cfg.depth_high_density):
             try:
                 depth_sensor.set_option(rs.option.visual_preset,
                                         float(rs.rs400_visual_preset.high_density))
                 print("[RS] visual_preset = High Density")
             except Exception as e:
                 print(f"[RS] visual_preset не поддержан: {e}")
-        lp = float(getattr(cfg, "depth_laser_power", -1.0))
+        lp = float(cfg.depth_laser_power)
         if lp != 0.0:
             try:
                 rng = depth_sensor.get_option_range(rs.option.laser_power)

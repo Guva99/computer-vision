@@ -64,16 +64,16 @@ class FrameRecorder:
 
     def __init__(self, cfg, path: Optional[str] = None, scenario_id: str = ""):
         self.cfg = cfg
-        self.root = Path(path or getattr(cfg, "recording_path", "captures/recording"))
+        self.root = Path(path or cfg.recording_path)
         self.frames_dir = self.root / "frames"
         self.frames_dir.mkdir(parents=True, exist_ok=True)
-        self.scenario_id = str(scenario_id or getattr(cfg, "scenario_id", "") or "")
-        self.compress = bool(getattr(cfg, "recording_compress", False))
+        self.scenario_id = str(scenario_id or cfg.scenario_id or "")
+        self.compress = bool(cfg.recording_compress)
         # Режим «только углы»: кадры на диск не пишем, joints.csv ведём как обычно.
-        self.joints_only = bool(getattr(cfg, "recording_joints_only", False))
-        self._put_timeout = float(getattr(cfg, "recording_put_timeout_s", 0.5))
+        self.joints_only = bool(cfg.recording_joints_only)
+        self._put_timeout = float(cfg.recording_put_timeout_s)
         self._q: queue.Queue = queue.Queue(
-            maxsize=max(4, int(getattr(cfg, "recording_queue_max", 120)))
+            maxsize=max(4, int(cfg.recording_queue_max))
         )
         self._stop = threading.Event()
         self._meta_written = False
@@ -94,8 +94,8 @@ class FrameRecorder:
         commit, branch = git_info(Path(__file__).resolve().parent.parent)
         intr = dict(intrinsics or {})
         # annotate.py берёт width/height из meta — кладём их всегда.
-        intr.setdefault("width", int(getattr(self.cfg, "width", 640)))
-        intr.setdefault("height", int(getattr(self.cfg, "height", 480)))
+        intr.setdefault("width", int(self.cfg.width))
+        intr.setdefault("height", int(self.cfg.height))
         meta = {
             "intrinsics": {
                 k: (int(v) if k in ("width", "height") else float(v))
@@ -210,9 +210,9 @@ class MaskDumper:
     """
 
     def __init__(self, cfg, path: Optional[str] = None):
-        self.every_n = max(0, int(getattr(cfg, "dump_masks_every_n", 0)))
-        base = path or getattr(cfg, "masks_dump_path", "") or (
-            str(Path(getattr(cfg, "recording_path", "captures/recording")) / "masks")
+        self.every_n = max(0, int(cfg.dump_masks_every_n))
+        base = path or cfg.masks_dump_path or (
+            str(Path(cfg.recording_path) / "masks")
         )
         self.root = Path(base)
         self.n_written = 0

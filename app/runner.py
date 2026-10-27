@@ -58,7 +58,7 @@ class AppRunner:
         # Источник кадров: камера или запись (A2). Playback нужен для абляции и
         # пересчёта метрик без стенда; управление роботом в нём принудительно
         # выключено — движения нет, останавливать нечего.
-        self.playback = str(getattr(cfg, "source_mode", "camera")) == "playback"
+        self.playback = str(cfg.source_mode) == "playback"
         if self.playback:
             from app.playback import PlaybackCamera
             if cfg.enable_robot_control:
@@ -75,30 +75,30 @@ class AppRunner:
         # Лог решений для метрик качества (tools/compute_metrics.py). По умолчанию
         # ВЫКЛ — на детекцию и производительность не влияет.
         self.decision_log = None
-        if bool(getattr(cfg, "enable_decision_log", False)):
+        if bool(cfg.enable_decision_log):
             self.decision_log = DecisionLogger(
-                str(getattr(cfg, "decision_log_path", "captures/decisions.csv")),
-                str(getattr(cfg, "scenario_id", "")),
+                str(cfg.decision_log_path),
+                str(cfg.scenario_id),
             )
             print(f"[METRICS] Лог решений → {self.decision_log.path}")
 
         # ── Сбор данных для экспериментов (все флаги по умолчанию ВЫКЛ) ──
         self.objects_log = None
-        if bool(getattr(cfg, "enable_objects_log", False)):
+        if bool(cfg.enable_objects_log):
             self.objects_log = ObjectsLogger(
-                str(getattr(cfg, "objects_log_path", "captures/objects.csv")),
-                str(getattr(cfg, "scenario_id", "")),
+                str(cfg.objects_log_path),
+                str(cfg.scenario_id),
             )
             print(f"[METRICS] Лог объектов → {self.objects_log.path}")
         self.recorder = None
-        if bool(getattr(cfg, "enable_recording", False)) and not self.playback:
-            self.recorder = FrameRecorder(cfg, scenario_id=str(getattr(cfg, "scenario_id", "")))
+        if bool(cfg.enable_recording) and not self.playback:
+            self.recorder = FrameRecorder(cfg, scenario_id=str(cfg.scenario_id))
             print(f"[REC] Запись кадров → {self.recorder.root}")
         self.masks = MaskDumper(cfg)
         self.stop_log = None
-        if bool(getattr(cfg, "enable_stop_log", False)) and not self.playback:
+        if bool(cfg.enable_stop_log) and not self.playback:
             self.stop_log = StopEventLogger(
-                cfg, scenario_id=str(getattr(cfg, "scenario_id", ""))
+                cfg, scenario_id=str(cfg.scenario_id)
             )
             print(f"[METRICS] Лог остановов → {self.stop_log.path}")
         # Предыдущая ближайшая точка FK-скелета — для link_speed_m_s в stop_events.
@@ -149,7 +149,7 @@ class AppRunner:
         print("\n[INFO] Starting camera (raw depth, no post-processing)...")
         # Ограничение длительности прогона: мастер серий объявляет оператору
         # время записи и должен выдержать его точно. 0 = работать до 'q'.
-        duration_s = float(getattr(cfg, "run_duration_s", 0.0) or 0.0)
+        duration_s = float(cfg.run_duration_s or 0.0)
         t_run0 = time.perf_counter()
         try:
             self.camera.start()

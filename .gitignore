@@ -31,6 +31,9 @@ captures/_regress/
 
 # Архив 2D-метода (162 МБ) — распакован рядом в cv_2d_method/
 cv_2d_method.zip
+# Архив записей (3.8 ГБ) и распакованный 2D-метод со своим venv.
+captures.zip
+cv_2d_method/
 
 # Local Claude config
 .claude/

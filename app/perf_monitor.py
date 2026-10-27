@@ -174,10 +174,10 @@ class PerfWindow:
 
 class PerfMonitor:
     def __init__(self, cfg):
-        self.enabled = bool(getattr(cfg, "perf_monitor", True))
-        self.overlay = bool(getattr(cfg, "perf_overlay", True))
-        self.gpu_every = max(1, int(getattr(cfg, "perf_gpu_every_n", 15)))
-        self.log_path = Path(getattr(cfg, "perf_log_path", "captures/perf_log.csv"))
+        self.enabled = bool(cfg.perf_monitor)
+        self.overlay = bool(cfg.perf_overlay)
+        self.gpu_every = max(1, int(cfg.perf_gpu_every_n))
+        self.log_path = Path(cfg.perf_log_path)
 
         self._rows: list = []
         self._stats = defaultdict(list)
@@ -196,7 +196,7 @@ class PerfMonitor:
         self.gpu = _GpuSampler() if self.enabled else None
         # Отдельное окно с графиками (как в 2D-программе)
         self.window = None
-        if self.enabled and bool(getattr(cfg, "perf_window", True)):
+        if self.enabled and bool(cfg.perf_window):
             self.window = PerfWindow()
 
         if self.enabled and not _PSUTIL:

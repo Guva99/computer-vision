@@ -46,7 +46,7 @@ class PlaybackCamera:
 
     def __init__(self, config):
         self.config = config
-        self.root = Path(getattr(config, "playback_path", "") or "")
+        self.root = Path(config.playback_path or "")
         if not self.root.exists():
             raise PlaybackError(f"Каталог записи не найден: {self.root}")
         self.meta = _load_meta(self.root)
@@ -62,7 +62,7 @@ class PlaybackCamera:
         self._i = 0
         self.finished = False
         self.last_frame_no = 0
-        self._fps = float(getattr(config, "playback_fps", 0.0) or 0.0)
+        self._fps = float(config.playback_fps or 0.0)
         self._t_prev = None
 
     def start(self) -> None:
@@ -115,7 +115,7 @@ class PlaybackJointReader:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.root = Path(getattr(cfg, "playback_path", "") or "")
+        self.root = Path(cfg.playback_path or "")
         self._by_frame: dict = {}
         self._last: Optional[Tuple[float, ...]] = None
 

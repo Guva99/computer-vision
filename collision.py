@@ -222,8 +222,8 @@ def detect_scene_objects(
             print(f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel} -> too few, skip")
         return []
 
-    depth_pct = float(getattr(cfg, "collision_depth_table_pct", 85.0))
-    min_h = float(getattr(cfg, "collision_depth_table_min_height_m", 0.02))
+    depth_pct = float(cfg.collision_depth_table_pct)
+    min_h = float(cfg.collision_depth_table_min_height_m)
     pts, col = _filter_scene_by_depth(pts, col, depth_pct_table=depth_pct, min_height_m=min_h)
     n_depth = len(pts)
     if len(pts) < cfg.collision_dbscan_min_points:
@@ -239,11 +239,11 @@ def detect_scene_objects(
 
     # [ADAPTIVE ε] ─────────────────────────────────────────────────────────────
     # CLAUDE: удалить этот if-блок чтобы вернуть фиксированный ε
-    if bool(getattr(cfg, "collision_dbscan_adaptive_eps", False)):
-        _k     = int(getattr(cfg, "collision_dbscan_adaptive_k", 10))
-        _kappa = float(getattr(cfg, "collision_dbscan_adaptive_kappa", 1.2))
-        _emin  = float(getattr(cfg, "collision_dbscan_adaptive_eps_min", 0.020))
-        _emax  = float(getattr(cfg, "collision_dbscan_adaptive_eps_max", 0.060))
+    if bool(cfg.collision_dbscan_adaptive_eps):
+        _k     = int(cfg.collision_dbscan_adaptive_k)
+        _kappa = float(cfg.collision_dbscan_adaptive_kappa)
+        _emin  = float(cfg.collision_dbscan_adaptive_eps_min)
+        _emax  = float(cfg.collision_dbscan_adaptive_eps_max)
         _eps = _estimate_adaptive_eps(cloud, _k, _kappa, _emin, _emax)
         if _dbg_call_count % 60 == 1:
             print(f"[COLLISION DBG] adaptive_eps={_eps:.4f} m")
@@ -540,7 +540,7 @@ def detect_scene_objects_2d(
     # Исключаем РАЗДУТУЮ маску руки: тонкий ореол краёв/деталей самой руки (белый
     # пластик KUKA) иначе проходит как «чужой объект» вплотную → ложный DANGER.
     manip_excl = manipulator_mask
-    ex_px = int(getattr(cfg, "collision_obj_manip_exclude_dilate_px", 0))
+    ex_px = int(cfg.collision_obj_manip_exclude_dilate_px)
     if ex_px > 0 and np.count_nonzero(manipulator_mask) > 0:
         k_ex = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ex_px + 1, 2 * ex_px + 1))
         manip_excl = cv2.dilate(manipulator_mask, k_ex, iterations=1)
@@ -553,7 +553,7 @@ def detect_scene_objects_2d(
     contrast: Optional[np.ndarray] = None
     use_plane = (
         table_plane is not None
-        and bool(getattr(cfg, "collision_obj_plane_gate", False))
+        and bool(cfg.collision_obj_plane_gate)
     )
     if use_plane:
         a, b, c, d = (float(v) for v in np.asarray(table_plane).ravel()[:4])
@@ -561,40 +561,40 @@ def detect_scene_objects_2d(
         h_img = np.full(h * w, -np.inf, dtype=np.float32)
         h_img[valid_flat] = height.astype(np.float32)
         h_img = h_img.reshape(h, w)
-        hmin = float(getattr(cfg, "collision_obj_plane_height_min_m", 0.025))
-        hmax = float(getattr(cfg, "collision_obj_plane_height_max_m", 0.30))
+        hmin = float(cfg.collision_obj_plane_height_min_m)
+        hmax = float(cfg.collision_obj_plane_height_max_m)
         contrast = (h_img >= hmin) & (h_img <= hmax)
         # Вычесть известный синий пневмошланг робота: он выше стола (проходит
         # высотный гейт), но это деталь робота, а не объект. Это НЕ детекция по
         # цвету — а удаление заведомо известной детали.
         if (
             color_bgr is not None
-            and bool(getattr(cfg, "collision_obj_exclude_blue", True))
+            and bool(cfg.collision_obj_exclude_blue)
             and color_bgr.shape[:2] == (h, w)
         ):
             hsv_b = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
             hue_b, sat_b = hsv_b[:, :, 0], hsv_b[:, :, 1]
-            hue_lo = int(getattr(cfg, "collision_obj_blue_hue_lo", 90))
-            hue_hi = int(getattr(cfg, "collision_obj_blue_hue_hi", 140))
-            sat_min = int(getattr(cfg, "collision_obj_sat_min", 60))
+            hue_lo = int(cfg.collision_obj_blue_hue_lo)
+            hue_hi = int(cfg.collision_obj_blue_hue_hi)
+            sat_min = int(cfg.collision_obj_sat_min)
             is_blue = (hue_b >= hue_lo) & (hue_b <= hue_hi) & (sat_b >= sat_min)
             contrast = contrast & (~is_blue)
         obj_mask = obj_mask & contrast
     elif (
         color_bgr is not None
-        and bool(getattr(cfg, "collision_obj_color_gate", True))
+        and bool(cfg.collision_obj_color_gate)
         and color_bgr.shape[:2] == (h, w)
     ):
         gray = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2GRAY)
         hsv = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
         hue, sat = hsv[:, :, 0], hsv[:, :, 1]
-        bright_min = int(getattr(cfg, "collision_obj_bright_min", 150))
-        sat_min = int(getattr(cfg, "collision_obj_sat_min", 60))
+        bright_min = int(cfg.collision_obj_bright_min)
+        sat_min = int(cfg.collision_obj_sat_min)
         colored = sat >= sat_min
         # Drop the blue pneumatic hose: saturated-but-blue pixels are not objects.
-        if bool(getattr(cfg, "collision_obj_exclude_blue", True)):
-            hue_lo = int(getattr(cfg, "collision_obj_blue_hue_lo", 90))
-            hue_hi = int(getattr(cfg, "collision_obj_blue_hue_hi", 140))
+        if bool(cfg.collision_obj_exclude_blue):
+            hue_lo = int(cfg.collision_obj_blue_hue_lo)
+            hue_hi = int(cfg.collision_obj_blue_hue_hi)
             is_blue = (hue >= hue_lo) & (hue <= hue_hi)
             colored = colored & (~is_blue)
         contrast = (gray >= bright_min) | colored
@@ -619,7 +619,7 @@ def detect_scene_objects_2d(
             obj_mask = obj_mask & roi_bool
 
     reclaim_base: Optional[np.ndarray] = None
-    if bool(getattr(cfg, "collision_obj_reclaim_near_arm", True)) and ex_px > 0:
+    if bool(cfg.collision_obj_reclaim_near_arm) and ex_px > 0:
         reclaim_base = valid_2d & (manipulator_mask == 0)
         if contrast is not None:
             reclaim_base = reclaim_base & contrast
@@ -628,8 +628,8 @@ def detect_scene_objects_2d(
 
     obj_mask_u8 = (obj_mask.astype(np.uint8) * 255)
 
-    open_px = int(getattr(cfg, "collision_obj_open_px", 3))
-    close_px = int(getattr(cfg, "collision_obj_close_px", 5))
+    open_px = int(cfg.collision_obj_open_px)
+    close_px = int(cfg.collision_obj_close_px)
     if open_px > 0:
         k_open = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (open_px, open_px)
@@ -643,20 +643,20 @@ def detect_scene_objects_2d(
 
     # Кольцо near_manip нужно только в цвет-режиме (ограничить поиск зоной у руки).
     # В плоскостном режиме детекция идёт по всему столу — кольцо выключаем.
-    use_near = bool(getattr(cfg, "collision_obj_use_near_manip", True)) and not use_plane
+    use_near = bool(cfg.collision_obj_use_near_manip) and not use_plane
     if use_near and np.count_nonzero(manipulator_mask) > 0:
-        ring_px = int(getattr(cfg, "collision_obj_near_manip_dilate_px", 130))
+        ring_px = int(cfg.collision_obj_near_manip_dilate_px)
         near_ring = build_near_manip_ring_mask(manipulator_mask, ring_px)
         obj_mask_u8[near_ring == 0] = 0
 
     # Consolidate depth-holed fragments of one object into a solid blob.
-    cons_px = int(getattr(cfg, "collision_obj_consolidate_px", 11))
+    cons_px = int(cfg.collision_obj_consolidate_px)
     if cons_px > 1:
         k_cons = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (cons_px, cons_px))
         obj_mask_u8 = cv2.morphologyEx(obj_mask_u8, cv2.MORPH_CLOSE, k_cons)
     # Вертикальный close: сшить швы между кубиками СТОПКИ по вертикали (узкое по
     # X ядро не склеивает соседние объекты по горизонтали) → бокс на всю высоту.
-    vclose = int(getattr(cfg, "collision_obj_vclose_px", 0))
+    vclose = int(cfg.collision_obj_vclose_px)
     if vclose > 1:
         k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (3, vclose))
         obj_mask_u8 = cv2.morphologyEx(obj_mask_u8, cv2.MORPH_CLOSE, k_v)
@@ -666,23 +666,23 @@ def detect_scene_objects_2d(
         arm_sel = (manipulator_mask > 0).reshape(-1)[valid_flat]
         if np.any(arm_sel):
             z_arm = float(np.median(points[arm_sel][:, 2]))
-    max_z_behind = float(getattr(cfg, "collision_obj_max_depth_behind_arm_m", 0.20))
+    max_z_behind = float(cfg.collision_obj_max_depth_behind_arm_m)
 
     n_comp, labels, stats, _ = cv2.connectedComponentsWithStats(
         obj_mask_u8, connectivity=8
     )
-    min_area = int(getattr(cfg, "collision_obj_min_area_px", 150))
-    max_area = int(float(getattr(cfg, "collision_obj_max_area_frac", 0.25)) * h * w)
-    border_px = int(getattr(cfg, "collision_obj_exclude_border_px", 10))
-    drop_border = bool(getattr(cfg, "collision_obj_drop_border", True))
-    min_pts_3d = int(getattr(cfg, "collision_obj_min_points_3d", 15))
-    min_fill = float(getattr(cfg, "collision_obj_min_fill_ratio", 0.32))
-    max_aspect = float(getattr(cfg, "collision_obj_max_aspect", 4.5))
+    min_area = int(cfg.collision_obj_min_area_px)
+    max_area = int(float(cfg.collision_obj_max_area_frac) * h * w)
+    border_px = int(cfg.collision_obj_exclude_border_px)
+    drop_border = bool(cfg.collision_obj_drop_border)
+    min_pts_3d = int(cfg.collision_obj_min_points_3d)
+    min_fill = float(cfg.collision_obj_min_fill_ratio)
+    max_aspect = float(cfg.collision_obj_max_aspect)
 
     # Карта глубины по пикселям (NaN вне valid) — для признаков протечки руки:
     # сравнение глубины блоба с локальной глубиной руки рядом с ним.
     z_img: Optional[np.ndarray] = None
-    if bool(getattr(cfg, "collision_obj_arm_depth_reject", True)):
+    if bool(cfg.collision_obj_arm_depth_reject):
         z_flat = np.full(h * w, np.nan, dtype=np.float64)
         z_flat[valid_flat] = points[:, 2]
         z_img = z_flat.reshape(h, w)
@@ -694,7 +694,7 @@ def detect_scene_objects_2d(
     _rej = {"area": 0, "shape": 0, "border": 0, "pts3d": 0, "keepz": 0, "span": 0}
     # Пообъектные записи для objects.csv (A4). Пишем только под флагом: иначе это
     # список словарей на каждый блоб каждого кадра — в горячем цикле не нужен.
-    _log_cands = bool(getattr(cfg, "enable_objects_log", False))
+    _log_cands = bool(cfg.enable_objects_log)
     _cands: List[dict] = []
 
     def _note(reason: str, area_px, height_m=None) -> None:
@@ -749,7 +749,7 @@ def detect_scene_objects_2d(
             comp = comp | (comp_dil & reclaim_base)
         # Erode the component before sampling 3D points: boundary pixels carry
         # mixed depth (object vs table/arm) and would corrupt the distance.
-        erode_px = int(getattr(cfg, "collision_obj_erode_px", 3))
+        erode_px = int(cfg.collision_obj_erode_px)
         comp_sample = comp
         if erode_px > 1:
             k_er = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_px, erode_px))
@@ -786,7 +786,7 @@ def detect_scene_objects_2d(
         # Прореживание точек объекта для быстрой дистанции: полный пиксельный
         # кластер — тысячи точек, min_dist O(N·K) на кадр дорог. Воксель 1 см даёт
         # ошибку дистанции <= 1 см (порог DANGER 8 см) и консистентен с body 2 см.
-        dist_voxel = float(getattr(cfg, "collision_obj_dist_voxel_m", 0.01))
+        dist_voxel = float(cfg.collision_obj_dist_voxel_m)
         if dist_voxel > 0.0 and len(obj_pts) > min_pts_3d:
             obj_pts_ds = _voxel_down_np(obj_pts, dist_voxel)
             if len(obj_pts_ds) >= min_pts_3d:
@@ -825,7 +825,7 @@ def detect_scene_objects_2d(
             # или дрейфа плоскости все точки на ~одном уровне → размах мал.
             # Абсолютный порог высоты тут не годится: при дрейфе плоскости шум
             # «поднимается» и проходит, а размах остаётся малым.
-            min_span = float(getattr(cfg, "collision_obj_plane_min_span_m", 0.015))
+            min_span = float(cfg.collision_obj_plane_min_span_m)
             if min_span > 0.0 and len(hgt) >= 5:
                 span = float(np.percentile(hgt, 90) - np.percentile(hgt, 10))
                 if span < min_span:
@@ -861,7 +861,7 @@ def detect_scene_objects_2d(
     _last_candidates = _cands
 
     _dbg2d_call_count += 1
-    if bool(getattr(cfg, "collision_obj_debug_reject", False)) and np.count_nonzero(manipulator_mask) > 0:
+    if bool(cfg.collision_obj_debug_reject) and np.count_nonzero(manipulator_mask) > 0:
         # Печатаем расклад по причинам, только когда рука в кадре (интересующий
         # случай — потеря объекта у руки). Троттлинг раз в 5 вызовов.
         if _dbg2d_call_count % 5 == 0:

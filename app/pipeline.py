@@ -49,7 +49,7 @@ class PerceptionPipeline:
         self.visualizer = visualizer
         # Playback (A2): углы берутся из joints.csv записи, а не с контроллера.
         # Интерфейс тот же, поэтому остальной конвейер разницы не видит.
-        if str(getattr(cfg, "source_mode", "camera")) == "playback":
+        if str(cfg.source_mode) == "playback":
             from app.playback import PlaybackJointReader
             self.joint_reader = PlaybackJointReader(cfg).connect()
         else:

@@ -5,15 +5,15 @@
     "robot/services/joint_reader.py -> realsense_io"
   ],
   "oversized_files": {
-    "calibrate_click_fk.py": 510,
+    "calibrate_click_fk.py": 512,
     "calibrate_handeye.py": 498,
     "collision.py": 1170,
     "gripper_detection.py": 1543,
     "realsense_io.py": 592,
     "robot/services/robot_service.py": 502,
-    "tools/annotate.py": 423,
-    "tools/compute_metrics.py": 500,
-    "tools/run_experiments.py": 1129,
+    "tools/annotate.py": 425,
+    "tools/compute_metrics.py": 504,
+    "tools/run_experiments.py": 1133,
     "vision/collision_service.py": 718
   },
   "oversized_functions": {
@@ -66,7 +66,7 @@
       2
     ],
     "calibrate_click_fk.py:main": [
-      140,
+      141,
       0
     ],
     "calibrate_handeye.py:_solve_and_save": [
@@ -206,7 +206,7 @@
       6
     ],
     "tools/compute_metrics.py:main": [
-      68,
+      69,
       0
     ],
     "tools/regress.py:main": [
@@ -278,6 +278,6 @@
       7
     ]
   },
-  "getattr_cfg_sites": 127,
+  "getattr_cfg_sites": 0,
   "bool_flags": 55
 }
