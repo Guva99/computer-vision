@@ -1,5 +1,13 @@
 """
 Сервис для управления роботом KUKA.
+
+Параметры подключения и движения приходят ТОЛЬКО извне (из AppConfig через
+AppRunner). Своих дефолтов модуль не держит сознательно: раньше здесь лежали
+ROBOT_IP = "192.168.1.100" (рабочий адрес стенда — 192.168.17.2), BASE/TOOL = 1
+(управление идёт с BASE=0/TOOL=0, иначе координаты FK не совпадут) и
+придуманные декартовы точки цикла. Это был третий источник правды о стенде, и
+любая опечатка в вызове приводила бы не к ошибке, а к МОЛЧАЛИВОМУ движению
+робота по чужим координатам.
 """
 import time
 import numpy as np
@@ -9,30 +17,24 @@ from typing import Optional, Tuple, Callable
 from robot.drivers.kuka_driver import KukaDriver
 from robot.drivers.openshowvar import OpenShowVar
 
-# Конфигурация по умолчанию
-ROBOT_IP = "192.168.1.100"
-ROBOT_PORT = 7000
-ROBOT_BASE = 1
-ROBOT_TOOL = 1
-ROBOT_SPEED = 30
-ROBOT_HOME_POSITION = [450, 0, 600, 180, 0, 180]
-ROBOT_WORK_ANGLES = [180, 0, 180]
-ROBOT_CYCLE_LEFT = [350, 200, 600, 180, 0, 180]
-ROBOT_CYCLE_RIGHT = [350, -200, 600, 180, 0, 180]
+# Ориентация инструмента (A,B,C) для устаревшего движения «по наводке зрения»
+# (move_to_target_async). В основном цикле не участвует: там полные позы
+# [X,Y,Z,A,B,C] приходят из robot/cycle_path.py.
+LEGACY_WORK_ANGLES = [180, 0, 180]
 
 
 class RobotService:
     """Сервис для управления роботом KUKA."""
-    
+
     def __init__(
         self,
-        ip: Optional[str] = None,
-        port: Optional[int] = None,
+        ip: str,
+        port: int,
+        speed: int,
+        base: int,
+        tool: int,
+        home_position: list,
         auto_connect: bool = False,
-        speed: Optional[int] = None,
-        base: Optional[int] = None,
-        tool: Optional[int] = None,
-        home_position: Optional[list] = None,
         cycle_left: Optional[list] = None,
         cycle_right: Optional[list] = None,
         cycle_waypoints: Optional[list] = None,
@@ -41,22 +43,22 @@ class RobotService:
         Инициализация сервиса робота.
 
         Args:
-            ip: IP-адрес робота (по умолчанию из конфига)
-            port: Порт робота (по умолчанию из конфига)
-            auto_connect: Автоматически подключаться при создании
-            speed: % override скорости (движение/resume)
-            base/tool: номера BASE/TOOL KUKA
-            home_position/cycle_left/cycle_right: [X,Y,Z,A,B,C] точки
+            ip/port: адрес контроллера KUKAVARPROXY (обязательные)
+            speed: % override скорости (движение и resume)
+            base/tool: номера BASE/TOOL KUKA (для FK-поз это 0/0)
+            home_position: [X,Y,Z,A,B,C] стартовой позы
+            auto_connect: подключаться сразу в конструкторе
+            cycle_waypoints: точки свипа [[X,Y,Z,A,B,C], ...] (приоритетнее left/right)
+            cycle_left/cycle_right: две точки для простого ping-pong
         """
-        self.ip = ip if ip else ROBOT_IP
-        self.port = port if port else ROBOT_PORT
-        # Параметры движения: из аргументов или дефолты модуля
-        self.speed = speed if speed is not None else ROBOT_SPEED
-        self.base = base if base is not None else ROBOT_BASE
-        self.tool = tool if tool is not None else ROBOT_TOOL
-        self.home_position = list(home_position) if home_position is not None else list(ROBOT_HOME_POSITION)
-        self.cycle_left = list(cycle_left) if cycle_left is not None else list(ROBOT_CYCLE_LEFT)
-        self.cycle_right = list(cycle_right) if cycle_right is not None else list(ROBOT_CYCLE_RIGHT)
+        self.ip = str(ip)
+        self.port = int(port)
+        self.speed = int(speed)
+        self.base = int(base)
+        self.tool = int(tool)
+        self.home_position = list(home_position)
+        self.cycle_left = list(cycle_left) if cycle_left is not None else None
+        self.cycle_right = list(cycle_right) if cycle_right is not None else None
         # Список точек для ping-pong-свипа (приоритетнее left/right). Каждая — [X,Y,Z,A,B,C].
         self.cycle_waypoints = [list(wp) for wp in cycle_waypoints] if cycle_waypoints else None
 
@@ -258,9 +260,9 @@ class RobotService:
                     float(current_pos[0] + x_cam_mm),
                     float(current_pos[1] + y_cam_mm),
                     float(z_target),
-                    float(ROBOT_WORK_ANGLES[0]),
-                    float(ROBOT_WORK_ANGLES[1]),
-                    float(ROBOT_WORK_ANGLES[2])
+                    float(LEGACY_WORK_ANGLES[0]),
+                    float(LEGACY_WORK_ANGLES[1]),
+                    float(LEGACY_WORK_ANGLES[2])
                 ]
                 
                 print(f"\nMoving to target: X={target[0]:.1f}, Y={target[1]:.1f}, Z={target[2]:.1f}")
@@ -340,6 +342,19 @@ class RobotService:
             pass
         return ok
 
+    def _has_cycle_targets(self, use_sweep: bool) -> bool:
+        """Есть ли куда ехать в цикле.
+
+        Раньше при отсутствии точек подставлялись придуманные декартовы
+        координаты из дефолтов модуля — то есть вместо понятного отказа робот
+        уезжал в неизвестное место.
+        """
+        if use_sweep or (self.cycle_left and self.cycle_right):
+            return True
+        print("[ROBOT] Цикл НЕ запущен: не заданы ни cycle_waypoints, "
+              "ни пара cycle_left/cycle_right")
+        return False
+
     def start_cycle_movement(
         self,
         on_position_reached: Optional[Callable[[str, list], None]] = None
@@ -368,6 +383,8 @@ class RobotService:
         # Режим свипа по списку точек (ping-pong) — приоритетнее left/right.
         waypoints = self.cycle_waypoints
         use_sweep = bool(waypoints) and len(waypoints) >= 2
+        if not self._has_cycle_targets(use_sweep):
+            return False
 
         def cycle_loop():
             print("\n[CYCLE] Starting cycle movement...")

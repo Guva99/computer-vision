@@ -10,11 +10,11 @@
     "collision.py": 1170,
     "gripper_detection.py": 1543,
     "realsense_io.py": 592,
-    "robot/services/robot_service.py": 502,
+    "robot/services/robot_service.py": 519,
     "tools/annotate.py": 425,
     "tools/compute_metrics.py": 504,
     "tools/run_experiments.py": 1133,
-    "vision/collision_service.py": 718
+    "vision/collision_service.py": 707
   },
   "oversized_functions": {
     "app/decision_log.py:update": [
@@ -190,7 +190,7 @@
       5
     ],
     "robot/services/robot_service.py:start_cycle_movement": [
-      113,
+      115,
       2
     ],
     "segmentation.py:project_markers_to_3d": [

@@ -16,6 +16,7 @@ import numpy as np
 import collision as collision_mod
 from realsense_io import AppConfig
 from segmentation import split_cloud_by_mask
+from vision.table_plane import apply_to_config, load_table_plane
 
 
 @dataclass
@@ -56,7 +57,14 @@ class CollisionService:
         # Калиброванная плоскость стола (кадр камеры) для высотного гейта детекции.
         # Мерится один раз (calibrate_table_plane.py), не зависит от T_cr.
         self._table_roi = None  # ROI рабочей зоны (x0,y0,x1,y1 px), заполнит загрузчик
-        self._table_plane = self._load_table_plane()
+        self._table_plane_cal = load_table_plane(self.cfg)    # TablePlane | None
+        # Пороги калибровки применяются к КОПИИ конфига: внешний объект (его
+        # видят раннер и мета прогона) не меняется, а сервис и всё, куда он
+        # передаёт cfg, работают с действующими значениями.
+        self.cfg, roi_cal = apply_to_config(self.cfg, self._table_plane_cal)
+        self._table_plane = self._table_plane_cal.plane if self._table_plane_cal else None
+        if roi_cal:
+            self._table_roi = roi_cal
         self._resolve_table_roi()
 
     def _resolve_table_roi(self):
@@ -72,34 +80,15 @@ class CollisionService:
         if self._table_roi:
             print(f"[COLLISION] ROI рабочей зоны (px): {tuple(self._table_roi)}")
 
-    def _load_table_plane(self):
-        """Загрузить (a,b,c,d) из table_plane.json или None (→ фолбэк на цвет)."""
-        if not bool(self.cfg.collision_obj_plane_gate):
-            return None
-        path = Path(self.cfg.table_plane_path)
-        if not path.exists():
-            print(f"[COLLISION] table_plane.json не найден ({path}) — цвет-гейт (фолбэк). "
-                  f"Запусти calibrate_table_plane.py.")
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            plane = np.asarray(data["plane"], dtype=np.float64).ravel()[:4]
-            # Границы гейта из калибровки имеют приоритет над дефолтами конфига.
-            if "gate_min_m" in data:
-                self.cfg.collision_obj_plane_height_min_m = float(data["gate_min_m"])
-            if "gate_max_m" in data:
-                self.cfg.collision_obj_plane_height_max_m = float(data["gate_max_m"])
-            # ROI рабочей зоны из калибровки (приоритет над дефолтом конфига).
-            if "roi_px" in data and data["roi_px"]:
-                self._table_roi = tuple(int(v) for v in data["roi_px"][:4])
-            print(f"[COLLISION] Плоскость стола загружена: n=({plane[0]:+.2f},"
-                  f"{plane[1]:+.2f},{plane[2]:+.2f}) d={plane[3]:+.3f}, гейт "
-                  f"{self.cfg.collision_obj_plane_height_min_m*100:.1f}.."
-                  f"{self.cfg.collision_obj_plane_height_max_m*100:.0f} см")
-            return plane
-        except Exception as e:
-            print(f"[COLLISION] Ошибка чтения table_plane.json: {e} — цвет-гейт (фолбэк)")
-            return None
+    @property
+    def effective_gates(self) -> dict:
+        """Действующие пороги высотного гейта — для меты прогона и отчётов."""
+        return {
+            "plane_height_min_m": float(self.cfg.collision_obj_plane_height_min_m),
+            "plane_height_max_m": float(self.cfg.collision_obj_plane_height_max_m),
+            "roi_px": tuple(self._table_roi) if self._table_roi else None,
+            "plane_source": self._table_plane_cal.source if self._table_plane_cal else None,
+        }
 
     def _confirm_objects(self, scene_objects, body_ds, gripper_spheres):
         """Оставить только объекты, стабильно видимые >=N кадров в одном месте.
