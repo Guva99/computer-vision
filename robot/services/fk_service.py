@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-import collision as collision_mod
+from core.kinematics import SphereModel, build_link_spheres
 from kuka_fk import fk_joints, joints_to_uvs
 from realsense_io import AppConfig
 
@@ -58,6 +58,8 @@ class FkFrame:
 class FkProjector:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
+        # Сферическая модель манипулятора: собирается один раз, в прогоне не меняется.
+        self._sphere_model = SphereModel.from_config(cfg)
         # Load extrinsic calibration for FK-guided ROI
         self.T_cr: Optional[np.ndarray] = None
         if cfg.use_fk_roi:
@@ -104,15 +106,12 @@ class FkProjector:
         )
 
     def build_spheres(self, joint_angles):
-        cfg = self.cfg
-        return collision_mod.build_link_spheres(
-            joint_angles,
-            self.T_cr,
-            cfg.collision_link_radii_m,
-            cfg.collision_spheres_per_link,
-            gripper_length_m=cfg.fk_gripper_length_m,
-            gripper_radius_m=cfg.collision_gripper_radius_m,
-        )
+        """Сферы манипулятора в кадре камеры для оценки коллизий.
+
+        Параметры модели собираются из конфига один раз (в конструкторе), а не
+        на каждом кадре: они не меняются в течение прогона.
+        """
+        return build_link_spheres(joint_angles, self.T_cr, self._sphere_model)
 
     def link_thickness_px(self, joint_angles, intrinsics) -> List[float]:
         """Толщина каждого звена в пикселях = проекция радиуса звена на глубине:

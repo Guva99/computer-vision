@@ -13,7 +13,18 @@ import cv2
 import numpy as np
 import open3d as o3d
 
-from kuka_fk import fk_joints
+from core.geometry import (
+    CENTROID,
+    REPRESENTATIVE,
+    box_overlap as _box_overlap,
+    min_dist_point_to_cloud,
+    min_distance_to_spheres as min_distance_to_robot,
+    plane_height,
+    voxel_down,
+)
+from core.kinematics import build_link_spheres, link_part_name as _link_part_name
+from core.levels import LEVEL_ORDER, classify_level
+from core.types import CollisionResult, LinkSphere, SceneObject
 from pointcloud_pipeline import filter_cloud, to_open3d_cloud
 
 # Throttled debug counters
@@ -36,101 +47,11 @@ def pop_candidate_records() -> List[dict]:
     return out
 
 
-@dataclass
-class LinkSphere:
-    center: np.ndarray  # (3,) camera frame, metres
-    radius: float
-    part: str
-
-
-@dataclass
-class SceneObject:
-    obj_id: int
-    points: np.ndarray
-    colors: np.ndarray
-    centroid: np.ndarray
-    aabb_min: np.ndarray
-    aabb_max: np.ndarray
-    # Признаки протечки маски руки (заполняются в detect_scene_objects_2d):
-    # блоб прилип к маске руки + разница его глубины с локальной глубиной руки.
-    touches_arm: bool = False
-    arm_depth_delta_m: float = float("inf")
-    # Медианная высота объекта над калиброванной плоскостью стола (м), NaN если
-    # плоскость не задана. Для оценки «реальности» угрозы и отладки.
-    height_above_table_m: float = float("nan")
-    # Тугой 2D-bbox самой компоненты в пикселях (x, y, w, h) — для рисования
-    # аккуратного бокса на RGB без инфляции от проекции 3D-AABB. None у 3D-ветки.
-    bbox_2d: Optional[Tuple[int, int, int, int]] = None
-
-
-@dataclass
-class CollisionResult:
-    obj_id: int
-    min_dist_m: float
-    level: str
-    part: str
-
-
 LEVEL_COLORS_BGR = {
     "SAFE": (0, 200, 0),
     "WARN": (0, 220, 255),
     "DANGER": (0, 0, 255),
 }
-
-LEVEL_ORDER = {"SAFE": 0, "WARN": 1, "DANGER": 2}
-
-
-def _link_part_name(link_index: int) -> str:
-    if link_index == 5:
-        return "gripper"
-    if link_index == 4:
-        return "wrist"
-    return f"link{link_index + 1}"
-
-
-def build_link_spheres(
-    joint_angles: Sequence[float],
-    T_cr: np.ndarray,
-    link_radii_m: Sequence[float],
-    spheres_per_link: int = 8,
-    gripper_length_m: float = 0.0,
-    gripper_radius_m: float = 0.05,
-) -> List[LinkSphere]:
-    """Collision spheres along DH links in camera frame.
-
-    При gripper_length_m>0 добавляется сегмент J6(фланец)→TCP(кончик хвата),
-    помеченный 'gripper' — чтобы пальцы хвата были покрыты сферами и контакт
-    с объектом читался корректно (а не как расстояние до фланца).
-    """
-    positions_robot = fk_joints(tuple(joint_angles[:6]), gripper_length_m=gripper_length_m)
-    spheres: List[LinkSphere] = []
-    n_per = max(2, int(spheres_per_link))
-
-    # Сегменты: 6 звеньев робота + (опц.) хват J6→TCP
-    segments = []  # (i0, i1, radius_m, part)
-    for link_i in range(6):
-        r = float(link_radii_m[link_i]) if link_i < len(link_radii_m) else 0.08
-        segments.append((link_i, link_i + 1, r, _link_part_name(link_i)))
-    if gripper_length_m > 0.0 and len(positions_robot) > 7:
-        segments.append((6, 7, float(gripper_radius_m), "gripper"))
-
-    for i0, i1, radius, part in segments:
-        p0 = np.asarray(positions_robot[i0], dtype=np.float64)
-        p1 = np.asarray(positions_robot[i1], dtype=np.float64)
-        h0 = np.array([p0[0], p0[1], p0[2], 1.0], dtype=np.float64)
-        h1 = np.array([p1[0], p1[1], p1[2], 1.0], dtype=np.float64)
-        c0 = (T_cr @ h0)[:3]
-        c1 = (T_cr @ h1)[:3]
-        if c0[2] <= 1e-4 and c1[2] <= 1e-4:
-            continue
-        for j in range(n_per):
-            t = j / (n_per - 1) if n_per > 1 else 0.5
-            center = c0 + t * (c1 - c0)
-            if center[2] <= 1e-4:
-                continue
-            spheres.append(LinkSphere(center=center.astype(np.float64), radius=radius, part=part))
-    return spheres
-
 
 def _filter_scene_by_depth(
     pts: np.ndarray,
@@ -408,36 +329,6 @@ def _dilate_mask_in_bbox(
     return out
 
 
-def _voxel_down_np(pts: np.ndarray, voxel_m: float) -> np.ndarray:
-    """Быстрый воксель-даунсэмпл (numpy): один реальный представитель на воксель.
-
-    Для дистанции сохраняет РЕАЛЬНУЮ точку (не усреднённую), ошибка <= размера
-    вокселя. Без создания o3d-облака на каждый объект (дорого в цикле).
-    """
-    if len(pts) == 0 or voxel_m <= 0.0:
-        return pts
-    keys = np.floor(np.asarray(pts) / voxel_m).astype(np.int64)
-    _, idx = np.unique(keys, axis=0, return_index=True)
-    return pts[idx]
-
-
-def _box_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> Tuple[float, float]:
-    """(IoU, containment=inter/min_area) двух 2D-боксов (x, y, w, h)."""
-    ax0, ay0, aw, ah = a; bx0, by0, bw, bh = b
-    ax1, ay1 = ax0 + aw, ay0 + ah; bx1, by1 = bx0 + bw, by0 + bh
-    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
-    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
-    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-    inter = iw * ih
-    if inter == 0:
-        return 0.0, 0.0
-    area_a, area_b = aw * ah, bw * bh
-    union = area_a + area_b - inter
-    iou = inter / union if union > 0 else 0.0
-    cont = inter / min(area_a, area_b) if min(area_a, area_b) > 0 else 0.0
-    return iou, cont
-
-
 def _merge_overlapping_objects(
     objects: List["SceneObject"], iou_thresh: float, contain_thresh: float
 ) -> List["SceneObject"]:
@@ -557,7 +448,7 @@ def detect_scene_objects_2d(
     )
     if use_plane:
         a, b, c, d = (float(v) for v in np.asarray(table_plane).ravel()[:4])
-        height = points[:, 0] * a + points[:, 1] * b + points[:, 2] * c + d
+        height = plane_height(points, (a, b, c, d))
         h_img = np.full(h * w, -np.inf, dtype=np.float32)
         h_img[valid_flat] = height.astype(np.float32)
         h_img = h_img.reshape(h, w)
@@ -788,7 +679,7 @@ def detect_scene_objects_2d(
         # ошибку дистанции <= 1 см (порог DANGER 8 см) и консистентен с body 2 см.
         dist_voxel = float(cfg.collision_obj_dist_voxel_m)
         if dist_voxel > 0.0 and len(obj_pts) > min_pts_3d:
-            obj_pts_ds = _voxel_down_np(obj_pts, dist_voxel)
+            obj_pts_ds = voxel_down(obj_pts, dist_voxel, REPRESENTATIVE)
             if len(obj_pts_ds) >= min_pts_3d:
                 obj_pts = obj_pts_ds
                 obj_col = np.zeros((len(obj_pts_ds), obj_col.shape[1]), dtype=obj_col.dtype)
@@ -817,7 +708,7 @@ def detect_scene_objects_2d(
         aabb_max = obj_pts.max(axis=0)
         obj_height = float("nan")
         if use_plane:
-            hgt = obj_pts[:, 0] * a + obj_pts[:, 1] * b + obj_pts[:, 2] * c + d
+            hgt = plane_height(obj_pts, (a, b, c, d))
             obj_height = float(np.median(hgt))
             # Гейт вертикальной структуры против фантомов на пустом столе
             # (ДРЕЙФ-НЕЗАВИСИМ): у реального кубика точки тянутся по высоте (видны
@@ -878,69 +769,6 @@ def detect_scene_objects_2d(
     return objects, obj_mask_u8
 
 
-def min_distance_to_robot(
-    spheres: List[LinkSphere],
-    obj_points: np.ndarray,
-) -> Tuple[float, str, np.ndarray]:
-    """Minimum distance from object point cloud to union of spheres."""
-    if len(spheres) == 0 or len(obj_points) == 0:
-        return float("inf"), "none", np.zeros(3, dtype=np.float64)
-
-    best_dist = float("inf")
-    best_part = "none"
-    best_center = np.zeros(3, dtype=np.float64)
-
-    for sp in spheres:
-        diff = obj_points - sp.center.reshape(1, 3)
-        dists = np.linalg.norm(diff, axis=1) - sp.radius
-        d_min = float(np.min(dists))
-        if d_min < best_dist:
-            best_dist = d_min
-            best_part = sp.part
-            nearest_idx = int(np.argmin(dists))
-            best_center = sp.center.copy()
-
-    return max(0.0, best_dist), best_part, best_center
-
-
-def _voxel_down(pts: np.ndarray, voxel_m: float) -> np.ndarray:
-    """Voxel-downsample a point set (camera frame, metres) for fast distance."""
-    if len(pts) == 0 or voxel_m <= 0.0:
-        return pts
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(np.asarray(pts, dtype=np.float64))
-    cloud = cloud.voxel_down_sample(voxel_size=float(voxel_m))
-    return np.asarray(cloud.points)
-
-
-def min_dist_point_to_cloud(
-    obj_points: np.ndarray,
-    body_points: np.ndarray,
-    chunk: int = 512,
-    percentile: float = 0.0,
-) -> float:
-    """
-    Distance (metres) between an object point set and the robot-body point
-    cloud. Both are measured in the camera frame, so this does NOT depend on the
-    FK / extrinsic calibration. Chunked to bound memory.
-
-    `percentile` > 0 returns a low percentile of the per-object-point nearest
-    distances instead of the single closest pair — robust against a few noisy
-    boundary pixels that would otherwise trigger a false DANGER.
-    """
-    if len(obj_points) == 0 or len(body_points) == 0:
-        return float("inf")
-    body = body_points[None, :, :]  # (1, K, 3)
-    nearest = np.empty(len(obj_points), dtype=np.float64)
-    for i in range(0, len(obj_points), chunk):
-        ch = obj_points[i:i + chunk][:, None, :]  # (c, 1, 3)
-        d = np.linalg.norm(ch - body, axis=2)      # (c, K)
-        nearest[i:i + chunk] = d.min(axis=1)
-    if percentile <= 0.0:
-        return float(nearest.min())
-    return float(np.percentile(nearest, percentile))
-
-
 def evaluate_collisions_hybrid(
     body_points: np.ndarray,
     gripper_spheres: List[LinkSphere],
@@ -958,7 +786,7 @@ def evaluate_collisions_hybrid(
     represented by FK spheres (`gripper_spheres`). Per object the minimum of the
     two wins, and the part label comes from whichever source is closer.
     """
-    body_ds = _voxel_down(body_points, body_voxel_m)
+    body_ds = voxel_down(body_points, body_voxel_m, CENTROID)
 
     results: List[CollisionResult] = []
     worst_level = "SAFE"
@@ -991,14 +819,6 @@ def evaluate_collisions_hybrid(
     if worst_focus is None and results:
         worst_focus = min(results, key=lambda r: r.min_dist_m)
     return results, worst_level, worst_focus
-
-
-def classify_level(dist_m: float, warn_m: float, danger_m: float) -> str:
-    if dist_m <= danger_m:
-        return "DANGER"
-    if dist_m <= warn_m:
-        return "WARN"
-    return "SAFE"
 
 
 def evaluate_collisions(

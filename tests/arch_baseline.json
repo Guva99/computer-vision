@@ -1,20 +1,19 @@
 {
   "layer_violations": [
-    "robot/services/fk_service.py -> collision",
     "robot/services/fk_service.py -> realsense_io",
     "robot/services/joint_reader.py -> realsense_io"
   ],
   "oversized_files": {
     "calibrate_click_fk.py": 512,
     "calibrate_handeye.py": 498,
-    "collision.py": 1170,
+    "collision.py": 990,
     "gripper_detection.py": 1543,
     "realsense_io.py": 592,
     "robot/services/robot_service.py": 519,
     "tools/annotate.py": 425,
     "tools/compute_metrics.py": 504,
     "tools/run_experiments.py": 1133,
-    "vision/collision_service.py": 707
+    "vision/collision_service.py": 709
   },
   "oversized_functions": {
     "app/decision_log.py:update": [
@@ -92,10 +91,6 @@
     "collision.py:_merge_overlapping_objects": [
       65,
       3
-    ],
-    "collision.py:build_link_spheres": [
-      41,
-      6
     ],
     "collision.py:detect_scene_objects": [
       112,

@@ -25,7 +25,7 @@ from app.perf_monitor import PerfMonitor
 from app.pipeline import PerceptionPipeline
 from app.recorder import FrameRecorder, MaskDumper
 from app.stop_log import StopEventLogger
-from collision import LEVEL_ORDER
+from core.levels import LEVEL_ORDER
 from pointcloud_pipeline import to_open3d_cloud
 from realsense_io import AppConfig, RealSenseCamera
 from robot.cycle_path import build_home_and_sweep

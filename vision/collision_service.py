@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 
 import collision as collision_mod
+from core.geometry import (CENTROID, box_overlap, min_dist_point_to_cloud,
+                           min_distance_to_spheres, plane_height, voxel_down)
 from realsense_io import AppConfig
 from segmentation import split_cloud_by_mask
 from vision.table_plane import apply_to_config, load_table_plane
@@ -178,8 +180,8 @@ class CollisionService:
                 and not t.get("born_touching", False)
             ):
                 # Fast-path только для кандидатов уже рядом с рукой.
-                d = collision_mod.min_dist_point_to_cloud(t["obj"].points, body_ds)
-                d_g, _, _ = collision_mod.min_distance_to_robot(
+                d = min_dist_point_to_cloud(t["obj"].points, body_ds)
+                d_g, _, _ = min_distance_to_spheres(
                     gripper_spheres, t["obj"].points
                 )
                 if min(d, d_g) <= warn_m:
@@ -290,7 +292,7 @@ class CollisionService:
                 bb_a = getattr(k.get("obj"), "bbox_2d", None)
                 bb_b = getattr(kept.get("obj"), "bbox_2d", None)
                 if bb_a is not None and bb_b is not None:
-                    iou, cont = collision_mod._box_overlap(bb_a, bb_b)
+                    iou, cont = box_overlap(bb_a, bb_b)
                     if iou >= iou_t or cont >= con_t:
                         dup_of = j
                         break
@@ -387,7 +389,7 @@ class CollisionService:
             and any(i not in used for i in range(len(self._known)))
         ):
             pa, pb, pc, pd = (float(v) for v in np.asarray(self._table_plane).ravel()[:4])
-            hh = points[:, 0] * pa + points[:, 1] * pb + points[:, 2] * pc + pd
+            hh = plane_height(points, (pa, pb, pc, pd))
             h_img = np.full(h * w, np.nan, dtype=np.float32)
             h_img[valid_flat] = hh.astype(np.float32)
             h_img = h_img.reshape(h, w)
@@ -593,11 +595,11 @@ class CollisionService:
             and bool(cfg.collision_body_plane_clean)
         ):
             pa, pb, pc, pd = (float(v) for v in np.asarray(self._table_plane).ravel()[:4])
-            body_h = manip_pts[:, 0] * pa + manip_pts[:, 1] * pb + manip_pts[:, 2] * pc + pd
+            body_h = plane_height(manip_pts, (pa, pb, pc, pd))
             keep_body = body_h > float(cfg.collision_body_plane_min_height_m)
             if np.count_nonzero(keep_body) > 20:
                 manip_pts = manip_pts[keep_body]
-        body_ds = collision_mod._voxel_down(manip_pts, cfg.collision_body_voxel_m)
+        body_ds = voxel_down(manip_pts, cfg.collision_body_voxel_m, CENTROID)
         # Фильтр устойчивости: отсечь мигающие протечки руки, оставить стабильные.
         # body_ds/gripper_spheres нужны для fast-path (кандидат уже в WARN-зоне).
         if cfg.collision_persist_frames > 1:
@@ -678,7 +680,7 @@ class CollisionService:
             focus = next((o for o in cf.scene_objects
                           if o.obj_id == cf.worst_focus.obj_id), None)
             if focus is not None and len(focus.points) > 0:
-                _, _, fk_pt = collision_mod.min_distance_to_robot(spheres, focus.points)
+                _, _, fk_pt = min_distance_to_spheres(spheres, focus.points)
                 cf.nearest_fk_point = fk_pt
 
         if self.logger is not None:
