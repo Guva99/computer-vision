@@ -32,27 +32,16 @@ from core.geometry import (
 )
 from core.kinematics import build_link_spheres, link_part_name as _link_part_name
 from core.levels import LEVEL_ORDER, classify_level
-from core.types import CollisionResult, LinkSphere, SceneObject
+from core.types import CollisionResult, DetectionReport, LinkSphere, SceneObject
 from pointcloud_pipeline import filter_cloud, to_open3d_cloud
 
-# Throttled debug counters
+# Счётчик троттлинга диагностики ЗАПАСНОЙ 3D-ветки (collision_use_2d_detection=
+# False). Уйдёт вместе с самой ветвью, когда будет решена её судьба (docs/FLAGS.md).
 _dbg_call_count = 0
-_dbg2d_call_count = 0
 
-# Пообъектные записи кандидатов последнего кадра (A4, objects.csv): что пришло в
-# детекцию и какой гейт это убил. Счётчик _rej ниже остаётся агрегатом для
-# консольной диагностики, а здесь копится строка НА КАЖДОГО кандидата — иначе
-# в метриках не видно, по какой причине терялся конкретный объект.
-# Заполняется только при cfg.enable_objects_log; забирается pop_candidate_records().
-_last_candidates: List[dict] = []
-
-
-def pop_candidate_records() -> List[dict]:
-    """Забрать записи кандидатов последнего кадра детекции (и очистить буфер)."""
-    global _last_candidates
-    out = _last_candidates
-    _last_candidates = []
-    return out
+# У 3D-ветки маски кандидатов нет по построению: она работает с облаком,
+# а не с кадром. Отдаём пустую, чтобы тип возврата совпадал с 2D-веткой.
+_EMPTY_MASK = np.zeros((0, 0), dtype=np.uint8)
 
 
 def _filter_scene_by_depth(
@@ -119,7 +108,7 @@ def detect_scene_objects(
     scene_pts: np.ndarray,
     scene_col: np.ndarray,
     cfg,
-) -> List[SceneObject]:
+) -> DetectionReport:
     """Voxel downsample -> depth filter (no RANSAC) -> DBSCAN clusters."""
     global _dbg_call_count
     n_scene = len(scene_pts)
@@ -128,7 +117,7 @@ def detect_scene_objects(
         _dbg_call_count += 1
         if _dbg_call_count % 60 == 1:
             print(f"[COLLISION DBG] scene_pts={n_scene} -> too few, skip")
-        return []
+        return DetectionReport(objects=[], mask=_EMPTY_MASK)
 
     pts, col = filter_cloud(
         scene_pts,
@@ -143,7 +132,7 @@ def detect_scene_objects(
         _dbg_call_count += 1
         if _dbg_call_count % 60 == 1:
             print(f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel} -> too few, skip")
-        return []
+        return DetectionReport(objects=[], mask=_EMPTY_MASK)
 
     depth_pct = float(cfg.collision_depth_table_pct)
     min_h = float(cfg.collision_depth_table_min_height_m)
@@ -156,7 +145,7 @@ def detect_scene_objects(
                 f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel}, "
                 f"after_depth_filter={n_depth} -> too few, skip"
             )
-        return []
+        return DetectionReport(objects=[], mask=_EMPTY_MASK)
 
     cloud = to_open3d_cloud(pts, col)
 
@@ -188,7 +177,7 @@ def detect_scene_objects(
                 f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel}, "
                 f"after_depth_filter={n_depth}, clusters=0"
             )
-        return []
+        return DetectionReport(objects=[], mask=_EMPTY_MASK)
 
     objects: List[SceneObject] = []
     obj_id = 0
@@ -227,7 +216,9 @@ def detect_scene_objects(
             f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel}, "
             f"after_depth_filter={n_depth}, dbscan_labels={n_labels}, objects={len(objects)}"
         )
-    return objects
+    return DetectionReport(objects=objects,
+                           mask=np.zeros((0, 0), dtype=np.uint8),
+                           n_components=len(objects))
 
 
 def build_gripper_capsule_mask(
@@ -409,7 +400,7 @@ def detect_scene_objects_2d(
     color_bgr: Optional[np.ndarray] = None,
     table_plane: Optional[np.ndarray] = None,
     roi_rect: Optional[Tuple[int, int, int, int]] = None,
-) -> Tuple[List[SceneObject], np.ndarray]:
+) -> DetectionReport:
     """
     Detect scene objects from 2D valid-depth mask minus manipulator (like arm segmentation).
     Maps each component to 3D points via valid_flat for collision distance.
@@ -419,15 +410,11 @@ def detect_scene_objects_2d(
     (white box) or colour-saturated (green cube) — so the dark, desaturated
     table surface is rejected instead of being detected as a foreign object.
     """
-    global _dbg2d_call_count
     h, w = int(image_shape[0]), int(image_shape[1])
     obj_mask_u8 = np.zeros((h, w), dtype=np.uint8)
 
     if len(points) == 0 or valid_flat.size != h * w:
-        _dbg2d_call_count += 1
-        if _dbg2d_call_count % 60 == 1:
-            print("[COLLISION DBG] scene_obj2d: invalid input, objects=0")
-        return [], obj_mask_u8
+        return DetectionReport(objects=[], mask=obj_mask_u8)
 
     valid_2d = valid_flat.reshape(h, w)
     # Исключаем РАЗДУТУЮ маску руки: тонкий ореол краёв/деталей самой руки (белый
@@ -750,25 +737,15 @@ def detect_scene_objects_2d(
     # там дедуп ловит и фрагменты детекции, и призраков-коастинг трекера, и не
     # дёргает центроид детекции (иначе плодятся дубли-треки).
 
-    global _last_candidates
-    _last_candidates = _cands
-
-    _dbg2d_call_count += 1
-    if bool(cfg.collision_obj_debug_reject) and np.count_nonzero(manipulator_mask) > 0:
-        # Печатаем расклад по причинам, только когда рука в кадре (интересующий
-        # случай — потеря объекта у руки). Троттлинг раз в 5 вызовов.
-        if _dbg2d_call_count % 5 == 0:
-            print(
-                f"[REJECT2D] raw={max(0, n_comp - 1)} kept={n_kept} | "
-                f"area={_rej['area']} shape={_rej['shape']} border={_rej['border']} "
-                f"pts3d={_rej['pts3d']} keepz={_rej['keepz']} span={_rej['span']}"
-            )
-    elif _dbg2d_call_count % 60 == 1:
-        print(
-            f"[COLLISION DBG] scene_obj2d: components={max(0, n_comp - 1)}, "
-            f"kept={n_kept}, objects={len(objects)}"
-        )
-    return objects, obj_mask_u8
+    # Печать диагностики — задача вызывающего: у него есть номер кадра для
+    # троттлинга, а детектор остаётся чистой функцией от входа.
+    return DetectionReport(
+        objects=objects,
+        mask=obj_mask_u8,
+        candidates=_cands,
+        rejects=dict(_rej),
+        n_components=max(0, n_comp - 1),
+    )
 
 
 def evaluate_collisions_hybrid(

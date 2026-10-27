@@ -50,6 +50,7 @@ class CollisionService:
             )
         self._bbox_geoms: list = []
         self._confirm_rejects: list = []  # A4: (объект, причина) со стадии подтверждения
+        self._candidates: list = []       # A4: отбракованные гейтами кандидаты кадра
         self._selffilter_warned = False   # однократное предупреждение «FK-самофильтр вхолостую»
         self._no_spheres_frames = 0       # подряд идущие кадры без FK-сфер
         self._tracks: list = []  # временная устойчивость объектов (анти-мигание протечек руки)
@@ -216,6 +217,29 @@ class CollisionService:
                 )
         return confirmed
 
+    def _print_reject_diag(self, report, frame_count: int, manip_mask) -> None:
+        """Печать расклада причин отбраковки (бывший [REJECT2D] внутри детектора).
+
+        Печатает вызывающий, а не детектор: номер кадра есть здесь, и детектор
+        остаётся чистой функцией от входа — его можно вызвать дважды за кадр
+        (две камеры) без путаницы в счётчиках.
+        """
+        if not bool(self.cfg.collision_obj_debug_reject):
+            return
+        n_kept = len(report.objects)
+        rej = report.rejects
+        if np.count_nonzero(manip_mask) > 0:
+            # Интересует потеря объекта у руки, поэтому печатаем, когда рука в
+            # кадре. Троттлинг — раз в 5 кадров.
+            if frame_count % 5 == 0:
+                print(f"[REJECT2D] raw={report.n_components} kept={n_kept} | "
+                      f"area={rej.get('area', 0)} shape={rej.get('shape', 0)} "
+                      f"border={rej.get('border', 0)} pts3d={rej.get('pts3d', 0)} "
+                      f"keepz={rej.get('keepz', 0)} span={rej.get('span', 0)}")
+        elif frame_count % 60 == 1:
+            print(f"[COLLISION DBG] scene_obj2d: components={report.n_components}, "
+                  f"kept={n_kept}, objects={len(report.objects)}")
+
     def _build_object_records(self, cf) -> list:
         """Строки objects.csv (A4) по кадру: кандидаты и финальные объекты.
 
@@ -236,7 +260,7 @@ class CollisionService:
                 "level": "",
                 "reject_reason": r.get("reject_reason", ""),
             }
-            for r in collision_mod.pop_candidate_records()
+            for r in self._candidates
         ]
         for obj, reason in self._confirm_rejects:
             rows.append({
@@ -507,7 +531,7 @@ class CollisionService:
                 manip_for_detect = cv2.bitwise_or(masks.manipulator, cap)
 
         if cfg.collision_use_2d_detection:
-            cf.scene_objects, cf.scene_obj_mask_2d = collision_mod.detect_scene_objects_2d(
+            report = collision_mod.detect_scene_objects_2d(
                 points,
                 colors,
                 valid_flat,
@@ -518,13 +542,16 @@ class CollisionService:
                 table_plane=self._table_plane,
                 roi_rect=self._table_roi,
             )
+            cf.scene_objects, cf.scene_obj_mask_2d = report.objects, report.mask
+            self._candidates = report.candidates
+            self._print_reject_diag(report, frame_count, masks.manipulator)
         else:
             _, (scene_pts, scene_col) = split_cloud_by_mask(
                 points, colors, valid_flat, manip_for_detect
             )
-            cf.scene_objects = collision_mod.detect_scene_objects(
-                scene_pts, scene_col, cfg
-            )
+            report = collision_mod.detect_scene_objects(scene_pts, scene_col, cfg)
+            cf.scene_objects = report.objects
+            self._candidates = report.candidates
         # Workspace-фильтр: объект вне рабочей зоны (в базе робота) — не объект
         # для коллизий (профиль ограждения, стенки, фон за столом).
         if (
@@ -676,7 +703,7 @@ class CollisionService:
         if bool(cfg.enable_objects_log):
             cf.object_records = self._build_object_records(cf)
         else:
-            collision_mod.pop_candidate_records()  # не копить буфер вхолостую
+            self._candidates = []
             self._confirm_rejects = []
         if bool(cfg.enable_stop_log) and spheres and cf.worst_focus:
             focus = next((o for o in cf.scene_objects
