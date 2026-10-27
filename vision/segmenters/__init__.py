@@ -40,7 +40,7 @@ def build_segmenter(cfg) -> SegmenterPort:
     опечатка в конфиге не должна оставлять прогон с не тем алгоритмом, по
     которому потом будут отчитываться метрики.
     """
-    name = str(getattr(cfg, "segmenter", DEFAULT_SEGMENTER) or DEFAULT_SEGMENTER)
+    name = str(cfg.segmenter or DEFAULT_SEGMENTER)
     if name not in _SEGMENTERS:
         raise ValueError(
             f"Неизвестный сегментатор {name!r}. Доступны: {available_segmenters()}"

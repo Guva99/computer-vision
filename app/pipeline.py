@@ -20,7 +20,7 @@ from robot.services.joint_reader import JointAngleReader
 from vision.collision_service import CollisionService
 from vision.gripper_service import GripperWristService
 from vision.overlay_service import OverlayRenderer
-from vision.segmentation_service import ManipulatorSegmenter
+from vision.segmenters import SegmentationInput, build_segmenter
 from vision.masks import scene_objects_image_mask
 from vision.visualizer import CloudVisualizer
 
@@ -56,7 +56,8 @@ class PerceptionPipeline:
         else:
             self.joint_reader = JointAngleReader(cfg).connect()
         self.fk_projector = FkProjector(cfg)
-        self.segmenter = ManipulatorSegmenter(cfg)
+        # Реализация выбирается конфигом (cfg.segmenter) — конвейер знает только порт.
+        self.segmenter = build_segmenter(cfg)
         self.gripper_wrist = GripperWristService(cfg)
         self.collision_service = CollisionService(cfg)
         self.overlay = OverlayRenderer(cfg)
@@ -95,25 +96,26 @@ class PerceptionPipeline:
         # ── stage: masks ──
         _ck_a = time.perf_counter()
         overlay = color_bgr.copy()
-        masks = self.segmenter.empty_masks(color_bgr.shape)
         gripper_debug = {}
         fkf = FkFrame()  # defaults: use_fk=False, всё None/False
 
         if self.fk_projector.base_use_fk(joint_angles):
             try:
                 fkf = self.fk_projector.project(joint_angles, intrinsics, color_bgr.shape)
-                if cfg.use_robot_self_filter and fkf.fk_uvs is not None:
-                    self.segmenter.build_fk_masks(
-                        masks, fkf, depth, depth_scale, color_bgr, gripper_debug
-                    )
             except Exception as e:
                 print(f"[WARN] FK projection failed: {e}")
                 fkf.use_fk = False
 
-        self.segmenter.fallback_manipulator_only(
-            masks, fkf, depth, depth_scale, color_bgr, gripper_debug
-        )
-        self.segmenter.hold_and_resolve(masks)
+        # Сегментация — один вызов порта. Порядок шагов внутри реализации
+        # (seed по FK → фолбэк → temporal hold) конвейера больше не касается:
+        # иначе вторая реализация требовала бы правок здесь.
+        masks = self.segmenter.segment(SegmentationInput(
+            color_bgr=color_bgr,
+            depth=depth,
+            depth_scale=depth_scale,
+            fk=fkf,
+            debug_out=gripper_debug,
+        ))
         _ck_masks = time.perf_counter()
         st["masks"] = _ck_masks - _ck_a
 

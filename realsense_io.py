@@ -93,6 +93,11 @@ class AppConfig:
     # 0.137 = совпадает с длиной инструмента в калибровке (extrinsic.json) → скелет тянется до кончика хвата
     fk_gripper_length_m: float = 0.137
     extrinsic_path: str = "extrinsic.json"
+    # Реализация сегментации манипулятора (vision/segmenters). "brightness" —
+    # исходная яркостная, по ней сняты все записи. Новая (например,
+    # категорийно-независимая нейросетевая) подключается здесь, без правок
+    # конвейера; неизвестное имя падает на старте.
+    segmenter: str = "brightness"
     use_robot_self_filter: bool = True
     robot_link_radius_px: int = 16
     robot_mask_dilate_px: int = 7

@@ -30,11 +30,21 @@ MODULES = [
     "app.recorder",
     "app.runner",
     "app.stop_log",
+    # ядро
+    "core.geometry",
+    "core.kinematics",
+    "core.levels",
+    "core.projection",
+    "core.types",
     # зрение
     "vision.collision_service",
     "vision.gripper_service",
     "vision.overlay_service",
-    "vision.segmentation_service",
+    "vision.segmenters",
+    "vision.segmenters.base",
+    "vision.segmenters.brightness",
+    "vision.masks",
+    "vision.table_plane",
     "vision.visualizer",
     # робот
     "robot.cycle_path",

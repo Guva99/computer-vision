@@ -8,7 +8,7 @@
     "calibrate_handeye.py": 498,
     "collision.py": 874,
     "gripper_detection.py": 1543,
-    "realsense_io.py": 592,
+    "realsense_io.py": 597,
     "robot/services/robot_service.py": 519,
     "tools/annotate.py": 425,
     "tools/compute_metrics.py": 504,
@@ -29,7 +29,7 @@
       6
     ],
     "app/pipeline.py:process": [
-      124,
+      125,
       4
     ],
     "app/recorder.py:add": [
@@ -260,15 +260,15 @@
       135,
       9
     ],
-    "vision/segmentation_service.py:_manipulator_mask": [
+    "vision/segmenters/brightness.py:_manipulator_mask": [
       42,
       9
     ],
-    "vision/segmentation_service.py:build_fk_masks": [
+    "vision/segmenters/brightness.py:build_fk_masks": [
       22,
       7
     ],
-    "vision/segmentation_service.py:fallback_manipulator_only": [
+    "vision/segmenters/brightness.py:fallback_manipulator_only": [
       12,
       7
     ]
