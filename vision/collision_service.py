@@ -18,7 +18,9 @@ from core.geometry import (CENTROID, box_overlap, min_dist_point_to_cloud,
                            min_distance_to_spheres, plane_height, voxel_down)
 from realsense_io import AppConfig
 from segmentation import split_cloud_by_mask
+from vision.masks import scene_objects_image_mask
 from vision.table_plane import apply_to_config, load_table_plane
+from vision.visualizer import make_o3d_aabb
 
 
 @dataclass
@@ -626,7 +628,7 @@ class CollisionService:
         # Растеризация точек объектов нужна только для debug-мозаики
         # (Python-цикл по точкам — дорого). Строим лишь когда показываем debug.
         if cfg.show_debug_masks:
-            cf.scene_objects_mask = collision_mod.build_scene_objects_image_mask(
+            cf.scene_objects_mask = scene_objects_image_mask(
                 cf.scene_objects, intrinsics, color_bgr.shape[:2]
             )
         if cf.scene_objects and (len(body_ds) > 0 or gripper_spheres):
@@ -702,7 +704,7 @@ class CollisionService:
                 level = res.level if res is not None else "SAFE"
                 if level == "SAFE" and not cfg.show_collision_overlay:
                     continue
-                ls = collision_mod.make_o3d_aabb(obj.aabb_min, obj.aabb_max, level)
+                ls = make_o3d_aabb(obj.aabb_min, obj.aabb_max, level)
                 vis.add_geometry(ls, reset_bounding_box=False)
                 self._bbox_geoms.append(ls)
         return cf

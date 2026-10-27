@@ -5,9 +5,21 @@
 Для скриншотов в статью поставь show_o3d_window=True в AppConfig.
 Тяжёлый рендер обновляется раз в N кадров (1-й кадр всегда).
 """
+import numpy as np
 import open3d as o3d
 
 from realsense_io import AppConfig
+from vision.overlay_service import LEVEL_COLORS_BGR
+
+
+def make_o3d_aabb(aabb_min, aabb_max, level: str) -> o3d.geometry.LineSet:
+    """Габарит объекта как каркасный бокс для 3D-окна, цвет — по уровню."""
+    aabb = o3d.geometry.AxisAlignedBoundingBox(aabb_min, aabb_max)
+    ls = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(aabb)
+    rgb = np.array(LEVEL_COLORS_BGR.get(level, (128, 128, 128)), dtype=np.float64) / 255.0
+    rgb = rgb[::-1]  # BGR -> RGB
+    ls.colors = o3d.utility.Vector3dVector(np.tile(rgb, (len(ls.lines), 1)))
+    return ls
 
 
 class CloudVisualizer:

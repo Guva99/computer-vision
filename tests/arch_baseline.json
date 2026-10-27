@@ -6,14 +6,14 @@
   "oversized_files": {
     "calibrate_click_fk.py": 512,
     "calibrate_handeye.py": 498,
-    "collision.py": 990,
+    "collision.py": 897,
     "gripper_detection.py": 1543,
     "realsense_io.py": 592,
     "robot/services/robot_service.py": 519,
     "tools/annotate.py": 425,
     "tools/compute_metrics.py": 504,
     "tools/run_experiments.py": 1133,
-    "vision/collision_service.py": 709
+    "vision/collision_service.py": 711
   },
   "oversized_functions": {
     "app/decision_log.py:update": [

@@ -7,6 +7,7 @@ import numpy as np
 import cv2
 
 import collision as collision_mod
+from core.projection import project_aabb_to_image
 from gripper_detection import (
     build_debug_mosaic,
     draw_fk_projections,
@@ -20,8 +21,25 @@ from gripper_detection import (
 )
 from realsense_io import AppConfig
 
+# Цвета уровней опасности (BGR). Живут в слое отрисовки: домен знает про
+# SAFE/WARN/DANGER, но не про то, какого они цвета на экране.
+LEVEL_COLORS_BGR = {
+    "SAFE": (0, 200, 0),
+    "WARN": (0, 220, 255),
+    "DANGER": (0, 0, 255),
+}
+
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _SKELETON_NAMES = ["Base", "J1", "J2", "J3", "J4", "J5(W)", "J6(G)", "TCP"]
+
+
+def draw_object_box(image_bgr, rect, level: str, label: str = "", thickness: int = 2) -> None:
+    """Рамка объекта на RGB, цвет — по уровню опасности."""
+    color = LEVEL_COLORS_BGR.get(level, (200, 200, 200))
+    x, y, bw, bh = rect
+    cv2.rectangle(image_bgr, (x, y), (x + bw, y + bh), color, thickness)
+    if label:
+        cv2.putText(image_bgr, label, (x, max(16, y - 6)), _FONT, 0.45, color, 1, cv2.LINE_AA)
 
 
 class OverlayRenderer:
@@ -146,7 +164,7 @@ class OverlayRenderer:
                 dist_txt = f"{cf.worst_focus.min_dist_m:.2f}m"
             else:
                 dist_txt = "--"
-            coll_color = collision_mod.LEVEL_COLORS_BGR.get(
+            coll_color = LEVEL_COLORS_BGR.get(
                 cf.worst_level, (200, 200, 200)
             )
             cv2.putText(
@@ -179,7 +197,7 @@ class OverlayRenderer:
                     # нет глубинной инфляции и смещения. Фолбэк — проекция AABB.
                     rect = getattr(obj, "bbox_2d", None)
                     if rect is None:
-                        rect = collision_mod.project_aabb_to_image(
+                        rect = project_aabb_to_image(
                             obj.aabb_min, obj.aabb_max, intrinsics, color_shape
                         )
                     if rect is None:
@@ -188,7 +206,7 @@ class OverlayRenderer:
                     _h = getattr(obj, "height_above_table_m", float("nan"))
                     if _h == _h:  # not NaN — высота над столом для диагностики фантомов
                         label += f" h{_h * 100:.0f}"
-                    collision_mod.draw_object_box(overlay, rect, level, label=label)
+                    draw_object_box(overlay, rect, level, label=label)
 
     def build_debug_mosaic(self, color_bgr, depth, depth_scale, masks, gripper_debug, cf):
         cfg = self.cfg

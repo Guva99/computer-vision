@@ -1,6 +1,14 @@
 """
-FK collision spheres vs scene objects (camera frame, metres).
-Uses kuka_fk, open3d, numpy only.
+Детекция объектов сцены и оценка коллизий (кадр камеры, метры).
+
+Геометрия, типы и решающее правило живут в `core/`; рисование рамок — в
+`vision/overlay_service.py`, боксы Open3D — в `vision/visualizer.py`,
+растеризация масок — в `vision/masks.py`. Здесь остаётся сама детекция:
+построение маски кандидатов, гейты отбраковки и оценка дистанций.
+
+Open3D нужен ТОЛЬКО запасной 3D-ветке детекции (`detect_scene_objects`,
+`collision_use_2d_detection=False`) — в рабочем режиме она не вызывается, см.
+docs/FLAGS.md.
 """
 from __future__ import annotations
 
@@ -46,12 +54,6 @@ def pop_candidate_records() -> List[dict]:
     _last_candidates = []
     return out
 
-
-LEVEL_COLORS_BGR = {
-    "SAFE": (0, 200, 0),
-    "WARN": (0, 220, 255),
-    "DANGER": (0, 0, 255),
-}
 
 def _filter_scene_by_depth(
     pts: np.ndarray,
@@ -852,101 +854,6 @@ def evaluate_collisions(
     if worst_focus is None and results:
         worst_focus = min(results, key=lambda r: r.min_dist_m)
     return results, worst_level, worst_focus
-
-
-def project_aabb_to_image(
-    aabb_min: np.ndarray,
-    aabb_max: np.ndarray,
-    intrinsics: Dict[str, float],
-    image_shape: Tuple[int, int],
-) -> Optional[Tuple[int, int, int, int]]:
-    """Project AABB corners to image; return (x, y, w, h) or None."""
-    h, w = image_shape[:2]
-    corners = np.array(
-        [
-            [aabb_min[0], aabb_min[1], aabb_min[2]],
-            [aabb_max[0], aabb_min[1], aabb_min[2]],
-            [aabb_min[0], aabb_max[1], aabb_min[2]],
-            [aabb_max[0], aabb_max[1], aabb_min[2]],
-            [aabb_min[0], aabb_min[1], aabb_max[2]],
-            [aabb_max[0], aabb_min[1], aabb_max[2]],
-            [aabb_min[0], aabb_max[1], aabb_max[2]],
-            [aabb_max[0], aabb_max[1], aabb_max[2]],
-        ],
-        dtype=np.float64,
-    )
-    fx, fy, cx, cy = intrinsics["fx"], intrinsics["fy"], intrinsics["cx"], intrinsics["cy"]
-    us, vs = [], []
-    for p in corners:
-        if p[2] <= 1e-4:
-            continue
-        us.append(fx * p[0] / p[2] + cx)
-        vs.append(fy * p[1] / p[2] + cy)
-    if not us:
-        return None
-    x0 = int(max(0, np.floor(min(us))))
-    y0 = int(max(0, np.floor(min(vs))))
-    x1 = int(min(w - 1, np.ceil(max(us))))
-    y1 = int(min(h - 1, np.ceil(max(vs))))
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return x0, y0, x1 - x0, y1 - y0
-
-
-def draw_object_box(
-    image_bgr: np.ndarray,
-    rect: Tuple[int, int, int, int],
-    level: str,
-    label: str = "",
-    thickness: int = 2,
-) -> None:
-    color = LEVEL_COLORS_BGR.get(level, (200, 200, 200))
-    x, y, bw, bh = rect
-    cv2.rectangle(image_bgr, (x, y), (x + bw, y + bh), color, thickness)
-    if label:
-        cv2.putText(
-            image_bgr,
-            label,
-            (x, max(16, y - 6)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
-
-
-def make_o3d_aabb(aabb_min: np.ndarray, aabb_max: np.ndarray, level: str) -> o3d.geometry.LineSet:
-    """Axis-aligned box as LineSet for Open3D."""
-    aabb = o3d.geometry.AxisAlignedBoundingBox(aabb_min, aabb_max)
-    ls = o3d.geometry.LineSet.create_from_axis_aligned_bounding_box(aabb)
-    rgb = np.array(LEVEL_COLORS_BGR.get(level, (128, 128, 128)), dtype=np.float64) / 255.0
-    rgb = rgb[::-1]  # BGR -> RGB
-    ls.colors = o3d.utility.Vector3dVector(np.tile(rgb, (len(ls.lines), 1)))
-    return ls
-
-
-def build_scene_objects_image_mask(
-    objects: List[SceneObject],
-    intrinsics: Dict[str, float],
-    image_shape: Tuple[int, int],
-) -> np.ndarray:
-    """Rasterize object points into a binary mask for debug."""
-    h, w = image_shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
-    fx, fy, cx, cy = intrinsics["fx"], intrinsics["fy"], intrinsics["cx"], intrinsics["cy"]
-    for obj in objects:
-        for p in obj.points:
-            if p[2] <= 1e-4:
-                continue
-            u = int(round(fx * p[0] / p[2] + cx))
-            v = int(round(fy * p[1] / p[2] + cy))
-            if 0 <= u < w and 0 <= v < h:
-                mask[v, u] = 255
-    if np.count_nonzero(mask) > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask = cv2.dilate(mask, k, iterations=1)
-    return mask
 
 
 class CollisionLogger:

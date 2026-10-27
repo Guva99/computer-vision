@@ -21,6 +21,7 @@ from vision.collision_service import CollisionService
 from vision.gripper_service import GripperWristService
 from vision.overlay_service import OverlayRenderer
 from vision.segmentation_service import ManipulatorSegmenter
+from vision.masks import scene_objects_image_mask
 from vision.visualizer import CloudVisualizer
 
 
@@ -166,7 +167,7 @@ class PerceptionPipeline:
             obstacle_mask = (
                 cf.scene_objects_mask
                 if cf.scene_objects_mask is not None and cf.scene_objects_mask.any()
-                else collision_mod.build_scene_objects_image_mask(
+                else scene_objects_image_mask(
                     cf.scene_objects, intrinsics, color_bgr.shape[:2]
                 )
             )
