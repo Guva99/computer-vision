@@ -41,6 +41,7 @@ from typing import List, Optional, Tuple
 import socket
 import cv2
 import numpy as np
+from app.console import setup_console  # noqa: E402
 
 try:
     from kuka_fk import fk_joints
@@ -363,6 +364,7 @@ def _draw(frame, pending_uv, robot_connected) -> np.ndarray:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    setup_console()
     global _pending_click
 
     ap = argparse.ArgumentParser()

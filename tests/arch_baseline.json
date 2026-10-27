@@ -1,0 +1,283 @@
+{
+  "layer_violations": [
+    "robot/services/fk_service.py -> collision",
+    "robot/services/fk_service.py -> realsense_io",
+    "robot/services/joint_reader.py -> realsense_io"
+  ],
+  "oversized_files": {
+    "calibrate_click_fk.py": 510,
+    "calibrate_handeye.py": 498,
+    "collision.py": 1170,
+    "gripper_detection.py": 1543,
+    "realsense_io.py": 592,
+    "robot/services/robot_service.py": 502,
+    "tools/annotate.py": 423,
+    "tools/compute_metrics.py": 500,
+    "tools/run_experiments.py": 1129,
+    "vision/collision_service.py": 718
+  },
+  "oversized_functions": {
+    "app/decision_log.py:update": [
+      16,
+      7
+    ],
+    "app/perf_monitor.py:_graph": [
+      21,
+      10
+    ],
+    "app/perf_monitor.py:update": [
+      41,
+      6
+    ],
+    "app/pipeline.py:process": [
+      124,
+      4
+    ],
+    "app/recorder.py:add": [
+      22,
+      6
+    ],
+    "app/runner.py:__init__": [
+      86,
+      2
+    ],
+    "app/runner.py:run": [
+      152,
+      1
+    ],
+    "app/stop_log.py:__init__": [
+      13,
+      8
+    ],
+    "app/stop_log.py:on_danger": [
+      5,
+      7
+    ],
+    "calibrate_camera_robot.py:_solve_and_save": [
+      62,
+      3
+    ],
+    "calibrate_camera_robot.py:main": [
+      142,
+      0
+    ],
+    "calibrate_click_fk.py:_solve_and_save": [
+      68,
+      2
+    ],
+    "calibrate_click_fk.py:main": [
+      140,
+      0
+    ],
+    "calibrate_handeye.py:_solve_and_save": [
+      109,
+      2
+    ],
+    "calibrate_handeye.py:main": [
+      156,
+      0
+    ],
+    "calibrate_table_plane.py:main": [
+      114,
+      0
+    ],
+    "calibrate_table_plane.py:on_mouse": [
+      9,
+      6
+    ],
+    "collision.py:_dilate_mask_in_bbox": [
+      20,
+      7
+    ],
+    "collision.py:_merge_overlapping_objects": [
+      65,
+      3
+    ],
+    "collision.py:build_link_spheres": [
+      41,
+      6
+    ],
+    "collision.py:detect_scene_objects": [
+      112,
+      3
+    ],
+    "collision.py:detect_scene_objects_2d": [
+      369,
+      9
+    ],
+    "collision.py:evaluate_collisions_hybrid": [
+      49,
+      8
+    ],
+    "gripper_detection.py:_gray_valid_near_arm": [
+      56,
+      9
+    ],
+    "gripper_detection.py:_pick_wrist_contour": [
+      71,
+      22
+    ],
+    "gripper_detection.py:build_manipulator_mask": [
+      313,
+      38
+    ],
+    "gripper_detection.py:build_robot_depth_mask": [
+      52,
+      7
+    ],
+    "gripper_detection.py:build_table_mask": [
+      78,
+      14
+    ],
+    "gripper_detection.py:detect_gripper_contour": [
+      128,
+      25
+    ],
+    "gripper_detection.py:detect_gripper_from_manipulator_mask": [
+      61,
+      12
+    ],
+    "gripper_detection.py:detect_gripper_in_roi": [
+      91,
+      17
+    ],
+    "gripper_detection.py:detect_gripper_with_robot_mask": [
+      30,
+      15
+    ],
+    "gripper_detection.py:detect_in_3d_sphere": [
+      81,
+      9
+    ],
+    "gripper_detection.py:detect_wrist_above_gripper": [
+      118,
+      34
+    ],
+    "gripper_detection.py:detect_wrist_in_roi": [
+      74,
+      16
+    ],
+    "gripper_detection.py:detect_wrist_with_robot_mask": [
+      34,
+      17
+    ],
+    "gripper_detection.py:draw_fk_projections": [
+      66,
+      9
+    ],
+    "measure_workspace.py:run_camera": [
+      71,
+      4
+    ],
+    "pointcloud_pipeline.py:build_cloud_arrays": [
+      10,
+      6
+    ],
+    "pointcloud_pipeline.py:filter_cloud": [
+      10,
+      6
+    ],
+    "robot/services/robot_service.py:__init__": [
+      50,
+      11
+    ],
+    "robot/services/robot_service.py:cycle_loop": [
+      80,
+      0
+    ],
+    "robot/services/robot_service.py:move_to_target_async": [
+      61,
+      5
+    ],
+    "robot/services/robot_service.py:start_cycle_movement": [
+      113,
+      2
+    ],
+    "segmentation.py:project_markers_to_3d": [
+      16,
+      6
+    ],
+    "show_skeleton.py:main": [
+      113,
+      0
+    ],
+    "tools/annotate.py:on_mouse": [
+      15,
+      6
+    ],
+    "tools/compute_metrics.py:main": [
+      68,
+      0
+    ],
+    "tools/regress.py:main": [
+      65,
+      0
+    ],
+    "tools/run_experiments.py:stage_calib": [
+      151,
+      1
+    ],
+    "tools/run_experiments.py:stage_e1": [
+      90,
+      2
+    ],
+    "tools/run_experiments.py:stage_e2": [
+      94,
+      2
+    ],
+    "tools/run_experiments.py:stage_e3": [
+      108,
+      2
+    ],
+    "tools/run_experiments.py:stage_report": [
+      175,
+      1
+    ],
+    "tools/test_axis_motion.py:main": [
+      81,
+      0
+    ],
+    "vision/collision_service.py:_confirm_objects": [
+      120,
+      4
+    ],
+    "vision/collision_service.py:_update_permanence": [
+      135,
+      7
+    ],
+    "vision/collision_service.py:evaluate": [
+      259,
+      11
+    ],
+    "vision/gripper_service.py:detect_gripper": [
+      122,
+      6
+    ],
+    "vision/gripper_service.py:detect_wrist": [
+      115,
+      7
+    ],
+    "vision/overlay_service.py:build_debug_mosaic": [
+      18,
+      7
+    ],
+    "vision/overlay_service.py:draw_hud": [
+      135,
+      9
+    ],
+    "vision/segmentation_service.py:_manipulator_mask": [
+      42,
+      9
+    ],
+    "vision/segmentation_service.py:build_fk_masks": [
+      22,
+      7
+    ],
+    "vision/segmentation_service.py:fallback_manipulator_only": [
+      12,
+      7
+    ]
+  },
+  "getattr_cfg_sites": 127,
+  "bool_flags": 55
+}

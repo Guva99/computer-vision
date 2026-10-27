@@ -7,11 +7,13 @@
   • vision/         — компьютерное зрение (сегментация, детекция, коллизии, оверлей, 3D);
   • app/            — конвейер кадра (PerceptionPipeline) и раннер цикла (AppRunner).
 """
+from app.console import setup_console
 from app.runner import AppRunner
 from realsense_io import AppConfig
 
 
 def main():
+    setup_console()
     cfg = AppConfig()
     AppRunner(cfg).run()
 

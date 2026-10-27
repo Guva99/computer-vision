@@ -1,0 +1,71 @@
+{
+  "_comment": [
+    "Golden-набор регрессии. Каждая запись закрывает свой путь в коде, а не",
+    "просто добавляет кадров: пустая сцена -> гейты и ложные срабатывания;",
+    "далёкий объект -> дистанция без DANGER; объект на траектории -> полный",
+    "цикл DANGER и останов; 50% скорости -> поведение при быстром сближении;",
+    "перекрытие -> память объектов и coasting треков; белая коробка при тусклом",
+    "свете -> поглощение объекта маской руки; башня -> вертикальный close и",
+    "span-гейт; resume -> гистерезис выхода и защёлка пропажи.",
+    "Поле fast: входит ли запись в быстрый набор (его гоняет pytest).",
+    "Golden снят на HEAD ветки refactor/clean-arch до начала правок кода."
+  ],
+  "recordings": [
+    {
+      "scenario_id": "S01_baseline_empty",
+      "recording": "captures/scenarios/S01_baseline_empty/run_01_3d/recording",
+      "golden": "S01_baseline_empty__run_01.csv",
+      "covers": "пустая сцена: ложных объектов нет",
+      "fast": true
+    },
+    {
+      "scenario_id": "S02_cube_far",
+      "recording": "captures/scenarios/S02_cube_far/run_01_3d/recording",
+      "golden": "S02_cube_far__run_01.csv",
+      "covers": "объект далеко: детекция без DANGER",
+      "fast": false
+    },
+    {
+      "scenario_id": "S04_cube_on_path",
+      "recording": "captures/scenarios/S04_cube_on_path/run_01_3d/recording",
+      "golden": "S04_cube_on_path__run_01.csv",
+      "covers": "объект на траектории: подтверждение трека, DANGER, останов",
+      "fast": true
+    },
+    {
+      "scenario_id": "S05_cube_on_path_fast",
+      "recording": "captures/scenarios/S05_cube_on_path_fast/run_01_3d/recording",
+      "golden": "S05_cube_on_path_fast__run_01.csv",
+      "covers": "скорость 50%: быстрое сближение",
+      "fast": false
+    },
+    {
+      "scenario_id": "S06_cube_occluded",
+      "recording": "captures/scenarios/S06_cube_occluded/run_01_3d/recording",
+      "golden": "S06_cube_occluded__run_01.csv",
+      "covers": "перекрытие рукой: память объектов и coasting треков",
+      "fast": false
+    },
+    {
+      "scenario_id": "S07_box_dim_light",
+      "recording": "captures/scenarios/S07_box_dim_light/run_01_3d/recording",
+      "golden": "S07_box_dim_light__run_01.csv",
+      "covers": "светлый объект и тусклый свет: поглощение маской манипулятора",
+      "fast": false
+    },
+    {
+      "scenario_id": "S08b_intrusion_tower",
+      "recording": "captures/scenarios/S08b_intrusion_tower/run_01_3d/recording",
+      "golden": "S08b_intrusion_tower__run_01.csv",
+      "covers": "башня кубиков: вертикальный close и гейт вертикальной структуры",
+      "fast": false
+    },
+    {
+      "scenario_id": "S11_resume_after_clear",
+      "recording": "captures/scenarios/S11_resume_after_clear/run_01_3d/recording",
+      "golden": "S11_resume_after_clear__run_01.csv",
+      "covers": "снятие препятствия: гистерезис выхода и защёлка пропажи",
+      "fast": false
+    }
+  ]
+}

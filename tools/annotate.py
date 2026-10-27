@@ -40,6 +40,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+from app.console import setup_console  # noqa: E402
 
 WINDOW = "GT annotate"
 
@@ -386,6 +387,7 @@ def _write_import_csv(rows: dict, out_csv: Path):
 
 
 def main():
+    setup_console()
     ap = argparse.ArgumentParser(description="Разметка ground truth записей")
     ap.add_argument("--recording", required=True,
                     help="Каталог записи рекордера (frames/ + meta.json)")

@@ -52,6 +52,9 @@ def save_figure(figures_dir, overlay):
 class AppRunner:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
+        # Окна OpenCV: при False цикл идёт без показа и без клавиш (регрессия,
+        # реплей пачкой). Решения кадра от этого не зависят.
+        self.show_windows = bool(cfg.show_cv_windows)
         # Источник кадров: камера или запись (A2). Playback нужен для абляции и
         # пересчёта метрик без стенда; управление роботом в нём принудительно
         # выключено — движения нет, останавливать нечего.
@@ -227,9 +230,10 @@ class AppRunner:
                     )
                 self._draw_perf(result.overlay)
 
-                cv2.imshow("RGB", result.overlay)
-                if result.debug_mosaic is not None:
-                    cv2.imshow("Debug masks", result.debug_mosaic)
+                if self.show_windows:
+                    cv2.imshow("RGB", result.overlay)
+                    if result.debug_mosaic is not None:
+                        cv2.imshow("Debug masks", result.debug_mosaic)
 
                 # ── timing probe: накопить и печатать средние раз в N кадров ──
                 st = result.stage_times
@@ -259,7 +263,8 @@ class AppRunner:
                     for k in _t_acc:
                         _t_acc[k] = 0.0
 
-                key = cv2.waitKey(1) & 0xFF
+                # Без окон клавиш нет: waitKey нужен только для прокачки GUI.
+                key = (cv2.waitKey(1) & 0xFF) if self.show_windows else 0xFF
                 if key == ord("q"):
                     break
                 if key == ord("s"):

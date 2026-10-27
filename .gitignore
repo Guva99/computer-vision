@@ -26,6 +26,8 @@ captures/progress.json
 captures/_diag/
 captures/_smoke/
 captures/_s1_motion/
+# Рабочий каталог регрессии (tools/regress.py): пересоздаётся прогоном.
+captures/_regress/
 
 # Архив 2D-метода (162 МБ) — распакован рядом в cv_2d_method/
 cv_2d_method.zip

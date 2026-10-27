@@ -39,6 +39,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402
+from pathlib import Path as _ProjectRoot
+sys.path.insert(0, str(_ProjectRoot(__file__).resolve().parents[1]))
+from app.console import setup_console  # noqa: E402
 
 from realsense_io import AppConfig  # noqa: E402
 
@@ -1092,6 +1095,7 @@ def stage_report(progress: Progress) -> None:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    setup_console()
     ap = argparse.ArgumentParser(
         description="Мастер сбора экспериментальных данных (docs/EXPERIMENTS.md)")
     ap.add_argument("--stage", required=True,

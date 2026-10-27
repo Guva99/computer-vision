@@ -46,6 +46,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
+from pathlib import Path as _ProjectRoot
+sys.path.insert(0, str(_ProjectRoot(__file__).resolve().parents[1]))
+from app.console import setup_console  # noqa: E402
 
 try:
     import cv2
@@ -425,6 +428,7 @@ def compare_mode(paths, out_dir: Path):
 
 
 def main():
+    setup_console()
     ap = argparse.ArgumentParser(description="Оффлайн-метрики валидации")
     ap.add_argument("--label", default="SET1", help="Имя набора (3D/2D/...)")
     ap.add_argument("--perf", nargs="*", help="perf_log CSV (можно несколько)")

@@ -127,8 +127,31 @@ python tools/annotate.py --recording captures/scenarios/S04_cube_on_path/run_01_
 ## 3. Оффлайн-реплей (абляция без стенда)
 
 ```bash
-python -c "from realsense_io import AppConfig; from app.runner import AppRunner; AppRunner(AppConfig(source_mode='playback', playback_path='captures/scenarios/S04_cube_on_path/run_01_3d/recording', enable_decision_log=True, decision_log_path='captures/replay_3d/decisions.csv', enable_objects_log=True, objects_log_path='captures/replay_3d/objects.csv', scenario_id='S04_cube_on_path')).run()"
+python tools/replay.py --recording captures/scenarios/S04_cube_on_path/run_01_3d/recording                        --out captures/replay_3d/decisions.csv
+
+# абляция: тот же вход, другой параметр (любое поле AppConfig)
+python tools/replay.py --recording <dir> --out off.csv --set collision_object_permanence=False
 ```
+
+Реплей идёт без окон и без мониторинга ресурсов — это «канонический конфиг
+регрессии» (`tools/replay.py: REGRESSION_OVERRIDES`). Детекция от этих флагов не
+зависит, поэтому решения совпадают с прогоном на стенде побитово: проверено на
+восьми записях, 1441 кадр, 0 расхождений.
+
+### Регрессия: проверка, что правка не изменила поведение
+
+```bash
+python tools/regress.py                 # golden-набор из 8 записей (~4.5 мин)
+python tools/regress.py --fast          # 2 записи (~1 мин), его же гоняет pytest
+python tools/regress.py --update        # переснять golden (только осознанно!)
+python tools/regress.py --compare collision_persist_frames=2   # абляция против golden
+.\scripts\check.ps1                    # всё вместе перед коммитом
+```
+
+Golden-файлы — `tests/golden/`, состав набора и что каждая запись покрывает —
+`tests/golden/manifest.json`. Сравниваются только решения (`frame`,
+`collision_level`, `min_dist_m`, `focus_part`, `n_objects`); `t_wall` и `fps`
+зависят от машины и в сверку не входят.
 
 Кадры отдаются строго последовательно из записи, углы A1..A6 берутся из
 `joints.csv` по номеру кадра, `enable_robot_control` принудительно `False`.
