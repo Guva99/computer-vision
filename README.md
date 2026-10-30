@@ -504,7 +504,7 @@ M_{\mathrm{obj}} = \mathrm{valid\_2d} \land \neg M_{\mathrm{manip}}
 6. Санити по Z: перцентили 2–98 %; **depth-guard** (если `collision_obj_max_depth_behind_arm_m > 0`): точки с \(z \ge z_{\mathrm{arm}} + \mathrm{margin}\), где \(z_{\mathrm{arm}} = \mathrm{median}(z \mid M_{\mathrm{manip}})\) — отсекает раму глубже руки.
 7. AABB, `SceneObject`.
 
-Запасной режим (`collision_use_2d_detection=False`): voxel → depth-percentile → DBSCAN в 3D.
+~~Запасной режим~~ (УДАЛЁН 2026-10-30, см. docs/adr/0005): voxel → depth-percentile → DBSCAN в 3D.
 
 Параметры: `collision_obj_min_area_px`, `collision_obj_max_area_frac`, `collision_obj_exclude_border_px`, `collision_obj_min_points_3d`, `collision_obj_use_near_manip`, `collision_obj_near_manip_dilate_px`, `collision_obj_max_depth_behind_arm_m` (0 = выключить depth-guard).
 

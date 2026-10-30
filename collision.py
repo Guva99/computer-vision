@@ -6,9 +6,9 @@
 растеризация масок — в `vision/masks.py`. Здесь остаётся сама детекция:
 построение маски кандидатов, гейты отбраковки и оценка дистанций.
 
-Open3D нужен ТОЛЬКО запасной 3D-ветке детекции (`detect_scene_objects`,
-`collision_use_2d_detection=False`) — в рабочем режиме она не вызывается, см.
-docs/FLAGS.md.
+Запасная 3D-ветвь (DBSCAN по облаку) удалена 2026-10-30 как неработающая:
+измерено, что она не обнаруживала препятствие ни на одном кадре S04 и не
+укладывалась в 30 минут на S08b. Обоснование и числа — docs/adr/0005.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-import open3d as o3d
 
 from core.geometry import (
     CENTROID,
@@ -33,193 +32,6 @@ from core.geometry import (
 from core.kinematics import build_link_spheres, link_part_name as _link_part_name
 from core.levels import LEVEL_ORDER, classify_level
 from core.types import CollisionResult, DetectionReport, LinkSphere, SceneObject
-from pointcloud_pipeline import filter_cloud, to_open3d_cloud
-
-# Счётчик троттлинга диагностики ЗАПАСНОЙ 3D-ветки (collision_use_2d_detection=
-# False). Уйдёт вместе с самой ветвью, когда будет решена её судьба (docs/FLAGS.md).
-_dbg_call_count = 0
-
-# У 3D-ветки маски кандидатов нет по построению: она работает с облаком,
-# а не с кадром. Отдаём пустую, чтобы тип возврата совпадал с 2D-веткой.
-_EMPTY_MASK = np.zeros((0, 0), dtype=np.uint8)
-
-
-def _filter_scene_by_depth(
-    pts: np.ndarray,
-    col: np.ndarray,
-    depth_pct_table: float = 85.0,
-    min_height_m: float = 0.02,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Keep points closer to the camera than the estimated table/background depth.
-    Avoids RANSAC picking the frame wall as the dominant plane.
-    """
-    if len(pts) == 0:
-        return pts, col
-    z = pts[:, 2]
-    z_table = float(np.percentile(z, float(depth_pct_table)))
-    keep = z < (z_table - float(min_height_m))
-    return pts[keep], col[keep]
-
-
-# ── ADAPTIVE ε (ВАК §3, формулы 5–6) ──────────────────────────────────────
-# CLAUDE: чтобы убрать — удали функцию _estimate_adaptive_eps() ниже
-#   и блок "# [ADAPTIVE ε]" внутри detect_scene_objects().
-#   Флаг в AppConfig: collision_dbscan_adaptive_eps (realsense_io.py).
-def _estimate_adaptive_eps(
-    cloud: "o3d.geometry.PointCloud",
-    k: int,
-    kappa: float,
-    eps_min: float,
-    eps_max: float,
-) -> float:
-    """
-    Оценка адаптивного ε для DBSCAN по k-distance графику (Ester et al., 1996).
-
-    Физическое обоснование: шаг между соседними точками RealSense растёт
-    линейно с дальностью (Δ ≈ z / f_x), поэтому фиксированный ε приводит
-    к избыточному дроблению близких кластеров и потере дальних.
-    Оценка по медиане расстояний до k-го соседа даёт ε, адаптированный
-    к текущей плотности облака кадра.
-
-    Формула (5):  ε = κ · median_p { ||p − p^(k)||₂ }
-    Формула (6):  ε ← clip(ε, ε_min, ε_max)
-    """
-    pts_arr = np.asarray(cloud.points)
-    n = len(pts_arr)
-    if n < k + 1:
-        return float(np.clip(0.035, eps_min, eps_max))
-
-    tree = o3d.geometry.KDTreeFlann(cloud)
-    k_dists = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        # search_knn возвращает (count, indices, squared_distances)
-        _, _, sq_dists = tree.search_knn_vector_3d(cloud.points[i], k + 1)
-        # sq_dists[0] — сама точка (расстояние 0), sq_dists[k] — k-й сосед
-        k_dists[i] = float(sq_dists[k]) ** 0.5
-
-    eps = float(kappa * np.median(k_dists))
-    eps = float(np.clip(eps, eps_min, eps_max))
-    return eps
-# ── END ADAPTIVE ε ─────────────────────────────────────────────────────────
-
-
-def detect_scene_objects(
-    scene_pts: np.ndarray,
-    scene_col: np.ndarray,
-    cfg,
-) -> DetectionReport:
-    """Voxel downsample -> depth filter (no RANSAC) -> DBSCAN clusters."""
-    global _dbg_call_count
-    n_scene = len(scene_pts)
-
-    if len(scene_pts) < max(cfg.collision_object_min_points, cfg.collision_dbscan_min_points):
-        _dbg_call_count += 1
-        if _dbg_call_count % 60 == 1:
-            print(f"[COLLISION DBG] scene_pts={n_scene} -> too few, skip")
-        return DetectionReport(objects=[], mask=_EMPTY_MASK)
-
-    pts, col = filter_cloud(
-        scene_pts,
-        scene_col,
-        voxel_size=float(cfg.collision_voxel_m),
-        nb_neighbors=20,
-        std_ratio=2.0,
-        use_statistical_outlier=False,
-    )
-    n_voxel = len(pts)
-    if len(pts) < cfg.collision_object_min_points:
-        _dbg_call_count += 1
-        if _dbg_call_count % 60 == 1:
-            print(f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel} -> too few, skip")
-        return DetectionReport(objects=[], mask=_EMPTY_MASK)
-
-    depth_pct = float(cfg.collision_depth_table_pct)
-    min_h = float(cfg.collision_depth_table_min_height_m)
-    pts, col = _filter_scene_by_depth(pts, col, depth_pct_table=depth_pct, min_height_m=min_h)
-    n_depth = len(pts)
-    if len(pts) < cfg.collision_dbscan_min_points:
-        _dbg_call_count += 1
-        if _dbg_call_count % 60 == 1:
-            print(
-                f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel}, "
-                f"after_depth_filter={n_depth} -> too few, skip"
-            )
-        return DetectionReport(objects=[], mask=_EMPTY_MASK)
-
-    cloud = to_open3d_cloud(pts, col)
-
-    # [ADAPTIVE ε] ─────────────────────────────────────────────────────────────
-    # CLAUDE: удалить этот if-блок чтобы вернуть фиксированный ε
-    if bool(cfg.collision_dbscan_adaptive_eps):
-        _k     = int(cfg.collision_dbscan_adaptive_k)
-        _kappa = float(cfg.collision_dbscan_adaptive_kappa)
-        _emin  = float(cfg.collision_dbscan_adaptive_eps_min)
-        _emax  = float(cfg.collision_dbscan_adaptive_eps_max)
-        _eps = _estimate_adaptive_eps(cloud, _k, _kappa, _emin, _emax)
-        if _dbg_call_count % 60 == 1:
-            print(f"[COLLISION DBG] adaptive_eps={_eps:.4f} m")
-    else:
-        _eps = float(cfg.collision_dbscan_eps_m)
-    # [END ADAPTIVE ε] ──────────────────────────────────────────────────────────
-
-    labels = np.array(
-        cloud.cluster_dbscan(
-            eps=_eps,
-            min_points=int(cfg.collision_dbscan_min_points),
-            print_progress=False,
-        )
-    )
-    if labels.size == 0:
-        _dbg_call_count += 1
-        if _dbg_call_count % 60 == 1:
-            print(
-                f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel}, "
-                f"after_depth_filter={n_depth}, clusters=0"
-            )
-        return DetectionReport(objects=[], mask=_EMPTY_MASK)
-
-    objects: List[SceneObject] = []
-    obj_id = 0
-    max_extent = float(cfg.collision_object_max_extent_m)
-    min_pts = int(cfg.collision_object_min_points)
-
-    for label in np.unique(labels):
-        if label < 0:
-            continue
-        idx = np.where(labels == label)[0]
-        if idx.size < min_pts:
-            continue
-        obj_pts = pts[idx]
-        obj_col = col[idx]
-        aabb_min = obj_pts.min(axis=0)
-        aabb_max = obj_pts.max(axis=0)
-        extent = float(np.max(aabb_max - aabb_min))
-        if extent > max_extent:
-            continue
-        objects.append(
-            SceneObject(
-                obj_id=obj_id,
-                points=obj_pts,
-                colors=obj_col,
-                centroid=obj_pts.mean(axis=0),
-                aabb_min=aabb_min,
-                aabb_max=aabb_max,
-            )
-        )
-        obj_id += 1
-
-    _dbg_call_count += 1
-    if _dbg_call_count % 60 == 1:
-        n_labels = len([l for l in np.unique(labels) if l >= 0])
-        print(
-            f"[COLLISION DBG] scene_pts={n_scene}, after_voxel={n_voxel}, "
-            f"after_depth_filter={n_depth}, dbscan_labels={n_labels}, objects={len(objects)}"
-        )
-    return DetectionReport(objects=objects,
-                           mask=np.zeros((0, 0), dtype=np.uint8),
-                           n_components=len(objects))
-
 
 def build_gripper_capsule_mask(
     spheres: List[LinkSphere],

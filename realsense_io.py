@@ -166,26 +166,6 @@ class AppConfig:
     collision_link_radii_m: tuple = (0.16, 0.13, 0.11, 0.095, 0.075, 0.065)
     collision_gripper_radius_m: float = 0.05  # радиус сфер пальцев хвата (J6→TCP)
     collision_spheres_per_link: int = 8
-    collision_voxel_m: float = 0.01
-    collision_ransac_dist_m: float = 0.005
-    collision_min_height_above_plane_m: float = 0.012
-    collision_depth_table_pct: float = 85.0
-    collision_depth_table_min_height_m: float = 0.02
-    collision_dbscan_eps_m: float = 0.035
-    # ── ADAPTIVE ε (ВАК §3, формулы 5–6) ──────────────────────────────────────
-    # CLAUDE: весь блок "ADAPTIVE ε" можно удалить безопасно —
-    #   в collision.py ищи функцию _estimate_adaptive_eps() и связанный блок
-    #   внутри detect_scene_objects(). Флаг по умолчанию False → поведение
-    #   не меняется пока не включишь явно.
-    collision_dbscan_adaptive_eps: bool = False   # True = адаптивный ε по k-distance
-    collision_dbscan_adaptive_k: int = 10         # k для kNN-оценки (= min_points)
-    collision_dbscan_adaptive_kappa: float = 1.2  # масштаб: ε = κ · median(k-dist)
-    collision_dbscan_adaptive_eps_min: float = 0.020  # нижняя граница clip, м
-    collision_dbscan_adaptive_eps_max: float = 0.060  # верхняя граница clip, м
-    # ── END ADAPTIVE ε ─────────────────────────────────────────────────────────
-    collision_dbscan_min_points: int = 20
-    collision_object_min_points: int = 30
-    collision_object_max_extent_m: float = 0.8
     collision_warn_dist_m: float = 0.12
     # DANGER: порог поднят 0.05→0.08 — конвейер систематически завышает дистанцию
     # (эрозии масок + перцентиль), плюс нужен запас на реакцию KUKA.
@@ -230,7 +210,6 @@ class AppConfig:
     collision_log_path: str = "captures/collisions.log"
     collision_log_every_n: int = 30
     show_collision_overlay: bool = True
-    collision_use_2d_detection: bool = True
     # 150→250: мелкие блобы шума глубины/дрейфа плоскости на пустом столе давали
     # фантомные объекты. Реальные кубики (~40-60px → 1600-3600px) сильно больше.
     collision_obj_min_area_px: int = 250

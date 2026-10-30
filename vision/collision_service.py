@@ -17,7 +17,6 @@ import collision as collision_mod
 from core.geometry import (CENTROID, box_overlap, min_dist_point_to_cloud,
                            min_distance_to_spheres, plane_height, voxel_down)
 from realsense_io import AppConfig
-from segmentation import split_cloud_by_mask
 from vision.masks import scene_objects_image_mask
 from vision.table_plane import apply_to_config, load_table_plane
 from vision.visualizer import make_o3d_aabb
@@ -530,28 +529,20 @@ class CollisionService:
             if np.count_nonzero(cap) > 0:
                 manip_for_detect = cv2.bitwise_or(masks.manipulator, cap)
 
-        if cfg.collision_use_2d_detection:
-            report = collision_mod.detect_scene_objects_2d(
-                points,
-                colors,
-                valid_flat,
-                manip_for_detect,
-                color_bgr.shape[:2],
-                cfg,
-                color_bgr=color_bgr,
-                table_plane=self._table_plane,
-                roi_rect=self._table_roi,
-            )
-            cf.scene_objects, cf.scene_obj_mask_2d = report.objects, report.mask
-            self._candidates = report.candidates
-            self._print_reject_diag(report, frame_count, masks.manipulator)
-        else:
-            _, (scene_pts, scene_col) = split_cloud_by_mask(
-                points, colors, valid_flat, manip_for_detect
-            )
-            report = collision_mod.detect_scene_objects(scene_pts, scene_col, cfg)
-            cf.scene_objects = report.objects
-            self._candidates = report.candidates
+        report = collision_mod.detect_scene_objects_2d(
+            points,
+            colors,
+            valid_flat,
+            manip_for_detect,
+            color_bgr.shape[:2],
+            cfg,
+            color_bgr=color_bgr,
+            table_plane=self._table_plane,
+            roi_rect=self._table_roi,
+        )
+        cf.scene_objects, cf.scene_obj_mask_2d = report.objects, report.mask
+        self._candidates = report.candidates
+        self._print_reject_diag(report, frame_count, masks.manipulator)
         # Workspace-фильтр: объект вне рабочей зоны (в базе робота) — не объект
         # для коллизий (профиль ограждения, стенки, фон за столом).
         if (
