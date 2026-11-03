@@ -1,0 +1,21 @@
+﻿&ACCESS RVO1
+DEF takeCube_5 ( )
+BAS (#TOOL,0 )
+BAS (#BASE,0 )
+
+$APO.CDIS = 10
+$ACC.CP = 0.6
+$VEL.CP = 0.7
+LIN {X -205, Y 392, Z 472, A 0, B 90, C 180} C_DIS
+LIN {X -258, Y 392, Z 472, A 0, B 90, C 180}
+
+;FOLD close Grip
+$OUT[2] = false
+wait sec 0.1
+$OUT[1] = true
+wait sec 0.5
+;ENDFOLD close Grip
+
+LIN {X -258, Y 392, Z 474, A 0, B 90, C 180} C_DIS
+LIN {X -205, Y 392, Z 474, A 0, B 90, C 180}
+END

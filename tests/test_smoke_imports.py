@@ -61,6 +61,7 @@ MODULES = [
     "tools.test_gripper",
     "tools.teach_poses",
     "tools.teach_view",
+    "tools.magazine",
 ]
 
 

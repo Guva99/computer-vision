@@ -1,0 +1,140 @@
+&ACCESS RVP
+&REL 5
+&PARAM EDITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF dist3( )
+INT Counter_Variable
+INT TCP_VEL
+INT io_id
+INT j_id
+INT program_id
+
+; --- magazine commands (CASE 20 / 21) ---
+INT slot_i
+DECL REAL SLOT_Z[6]
+DECL REAL SLOT_Y[6]
+DECL FRAME pApp
+DECL FRAME pIns
+
+BAS(#INITMOV,0)
+
+PTP $AXIS_ACT
+
+$ADVANCE = 0
+COM_ACTION = 0
+
+COM_CASEVAR = 0
+COM_VALUE1 = 0
+
+; Slot coordinates taken from working programs takeCube_1..6:
+; approach X = -205, insert X = -258, orientation A=0 B=90 C=180 for all.
+; Vertical pitch is exactly 61.5 mm.
+SLOT_Z[1] = 226.0
+SLOT_Z[2] = 287.5
+SLOT_Z[3] = 349.0
+SLOT_Z[4] = 410.5
+SLOT_Z[5] = 472.0
+SLOT_Z[6] = 533.5
+SLOT_Y[1] = 393.0
+SLOT_Y[2] = 393.0
+SLOT_Y[3] = 393.0
+SLOT_Y[4] = 392.0
+SLOT_Y[5] = 392.0
+SLOT_Y[6] = 391.0
+LOOP
+SWITCH COM_CASEVAR
+
+  CASE 1
+    $BASE = COM_FRAME
+    COM_CASEVAR = 0
+  CASE 2
+    $TOOL = COM_FRAME
+    COM_CASEVAR = 0
+  CASE 3
+    $OV_PRO= COM_VALUE1
+    COM_CASEVAR = 0
+  CASE 4
+    FOR Counter_Variable = 1 to COM_LENGTH
+      LIN COM_FRAME_ARRAY[Counter_Variable] C_DIS
+    ENDFOR
+    Counter_Variable = 0
+    COM_CASEVAR = 0
+CASE 5
+    FOR Counter_Variable = 1 to COM_LENGTH
+      PTP COM_FRAME_ARRAY[Counter_Variable] C_DIS
+    ENDFOR
+    Counter_Variable = 0
+    COM_CASEVAR = 0
+  CASE 7
+    $OUT[1]=OUT5
+    $OUT[2]=OUT6
+    COM_CASEVAR =0
+  CASE 8
+    $OUT[3]=OUT7 
+    COM_CASEVAR=0
+ CASE 9
+   COM_CASEVAR=0
+   EXIT
+
+  CASE 10
+    $OUT[10]=OUT7 
+    COM_CASEVAR=0
+  CASE 11
+    PTP COM_E6AXIS
+    COM_CASEVAR = 0
+  CASE 12
+    LIN_REL COM_FRAME #BASE
+    COM_CASEVAR = 0
+  CASE 20
+    ; TAKE cube from slot COM_VALUE1 (1..6). Same path as takeCube_N:
+    ; approach, insert, close grip, lift 2 mm, retract.
+    slot_i = COM_VALUE1
+    IF (slot_i >= 1) AND (slot_i <= 6) THEN
+      $ACC.CP = 0.6
+      $VEL.CP = 0.2
+      pApp = {X -205, Y 393, Z 226, A 0, B 90, C 180}
+      pApp.Y = SLOT_Y[slot_i]
+      pApp.Z = SLOT_Z[slot_i]
+      pIns = pApp
+      pIns.X = -258
+      LIN pApp
+      LIN pIns
+      $OUT[2] = FALSE
+      WAIT SEC 0.1
+      $OUT[1] = TRUE
+      WAIT SEC 0.5
+      pIns.Z = pIns.Z + 2
+      LIN pIns
+      pApp.Z = pApp.Z + 2
+      LIN pApp
+    ENDIF
+    COM_CASEVAR = 0
+  CASE 21
+    ; PUT cube back into slot COM_VALUE1 - reverse path.
+    slot_i = COM_VALUE1
+    IF (slot_i >= 1) AND (slot_i <= 6) THEN
+      $ACC.CP = 0.6
+      $VEL.CP = 0.2
+      pApp = {X -205, Y 393, Z 226, A 0, B 90, C 180}
+      pApp.Y = SLOT_Y[slot_i]
+      pApp.Z = SLOT_Z[slot_i] + 2
+      pIns = pApp
+      pIns.X = -258
+      LIN pApp
+      LIN pIns
+      pIns.Z = pIns.Z - 2
+      LIN pIns
+      $OUT[1] = FALSE
+      WAIT SEC 0.1
+      $OUT[2] = TRUE
+      WAIT SEC 0.5
+      pApp.Z = SLOT_Z[slot_i]
+      LIN pApp
+    ENDIF
+    COM_CASEVAR = 0
+ENDSWITCH
+
+ENDLOOP
+
+END
+

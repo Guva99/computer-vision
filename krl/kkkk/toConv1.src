@@ -1,0 +1,42 @@
+﻿&ACCESS RVO1
+DEF toConv1 ( )
+
+;FOLD INI;%{PE}
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3 
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+;FOLD ACC
+$ACC_AXIS[1] = 20
+$ACC_AXIS[2] = 20
+$ACC_AXIS[3] = 20
+$ACC_AXIS[4] = 20
+$ACC_AXIS[5] = 20
+$ACC_AXIS[6] = 20
+;ENDFOLD ACC
+; FOLD VEL
+$VEL_AXIS[1] = 35
+$VEL_AXIS[2] = 35
+$VEL_AXIS[3] = 35
+$VEL_AXIS[4] = 35
+$VEL_AXIS[5] = 35
+$VEL_AXIS[6] = 40
+; ENDFOLD VEL
+$APO.CDIS = 10
+PTP {A1 -90, A2 -90, A3 90, A4 0, A5 90, A6 0} C_DIS
+PTP {A1 -104, A2 -63, A3 88.6, A4 -93, A5 80, A6 116} 
+
+;FOLD open Grip
+$OUT[1] = false
+wait sec 0.1
+$OUT[2] = true
+wait sec 0.5
+;ENDFOLD open Grip
+
+END
