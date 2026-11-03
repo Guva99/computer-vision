@@ -57,6 +57,7 @@ MODULES = [
     "tools.replay",
     "tools.regress",
     "tools.run_live",
+    "tools.test_lin_rel",
 ]
 
 
