@@ -56,6 +56,7 @@ MODULES = [
     # инструменты
     "tools.replay",
     "tools.regress",
+    "tools.run_live",
 ]
 
 
