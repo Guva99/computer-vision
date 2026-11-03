@@ -27,7 +27,12 @@ def load_extrinsic(path: str) -> Optional[np.ndarray]:
         print(f"[INFO] extrinsic.json not found at '{path}' — FK-guided ROI disabled.")
         return None
     try:
-        data = json.loads(p.read_text())
+        # Явная кодировка обязательна: без неё Windows читает файл в cp1251,
+        # и любой UTF-8 JSON (а калибровка пишет туда русские пояснения)
+        # роняет загрузку. FK тогда молча отключается, система уходит в
+        # legacy-режим без самофильтра — ровно та ловушка, что описана
+        # в docs/STAND_NOTES.md (чёрный хват становится ложным объектом).
+        data = json.loads(p.read_text(encoding="utf-8"))
         T_cr = np.array(data["T_cr"], dtype=np.float64)
         assert T_cr.shape == (4, 4), "T_cr must be 4×4"
         print(f"[OK] Loaded extrinsic matrix from '{path}'  (RMS was {data.get('rms_px', '?'):.2f} px)")
