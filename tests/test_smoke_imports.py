@@ -60,6 +60,7 @@ MODULES = [
     "tools.test_lin_rel",
     "tools.test_gripper",
     "tools.teach_poses",
+    "tools.teach_view",
 ]
 
 
