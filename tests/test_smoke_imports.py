@@ -63,6 +63,7 @@ MODULES = [
     "tools.teach_view",
     "tools.magazine",
     "tools.pick_build_point",
+    "tools.move_to",
 ]
 
 
