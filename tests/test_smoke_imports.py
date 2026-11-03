@@ -58,6 +58,7 @@ MODULES = [
     "tools.regress",
     "tools.run_live",
     "tools.test_lin_rel",
+    "tools.test_gripper",
 ]
 
 
