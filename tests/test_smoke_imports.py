@@ -62,6 +62,7 @@ MODULES = [
     "tools.teach_poses",
     "tools.teach_view",
     "tools.magazine",
+    "tools.pick_build_point",
 ]
 
 
