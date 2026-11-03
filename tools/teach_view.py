@@ -94,8 +94,56 @@ def draw_buttons(img, state_text: str, ok: bool):
                     0.5, col, 1, cv2.LINE_AA)
 
 
-def main() -> int:
+def build_stack(cfg):
+    """Камера, визуализатор и конвейер восприятия — всё, что нужно для кадра."""
+    from app.pipeline import PerceptionPipeline
+    from vision.visualizer import CloudVisualizer
+
+    camera = RealSenseCamera(cfg)
+    visualizer = CloudVisualizer(cfg)
+    return camera, visualizer, PerceptionPipeline(cfg, visualizer)
+
+
+def resolve_command(key, click):
+    """Клавиша или клик по кнопке → True (сжать) / False (разжать) / None."""
+    if key == ord("o"):
+        return False
+    if key == ord("c"):
+        return True
+    if click is not None:
+        if _inside(click, _BTN_OPEN):
+            return False
+        if _inside(click, _BTN_CLOSE):
+            return True
+    return None
+
+
+def run_loop(camera, pipeline, osv, duration_s: float) -> None:
+    """Главный цикл окна наладки."""
     global _click
+    state_text, state_ok, t0, n = "", True, time.perf_counter(), 0
+    while True:
+        if duration_s > 0 and time.perf_counter() - t0 >= duration_s:
+            break
+        frame = camera.get_aligned_frames()
+        if frame is None:
+            continue
+        n += 1
+        img = pipeline.process(frame, n, False).overlay
+        draw_buttons(img, state_text, state_ok)
+        cv2.imshow(WINDOW, img)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+        cmd = resolve_command(key, _click)
+        _click = None
+        if cmd is not None:
+            state_ok, state_text = send_grip(osv, cmd)
+            print(f"[GRIP] {'сжать' if cmd else 'разжать'}: {state_text}")
+
+
+def main() -> int:
     setup_console()
     ap = argparse.ArgumentParser(description="Окно наладки: камера + кнопки хвата")
     ap.add_argument("--duration", type=float, default=0.0, help="ограничение сеанса, с")
@@ -113,49 +161,13 @@ def main() -> int:
         print(f"[WARN] Нет связи с контроллером {args.ip}:{args.port} — кнопки не сработают")
         osv = None
 
-    from app.pipeline import PerceptionPipeline
-    from vision.visualizer import CloudVisualizer
-
-    camera = RealSenseCamera(cfg)
-    visualizer = CloudVisualizer(cfg)
-    pipeline = PerceptionPipeline(cfg, visualizer)
-
+    camera, visualizer, pipeline = build_stack(cfg)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(WINDOW, _on_mouse)
     camera.start()
     print("[OK] Окно наладки. Кнопки внизу справа, клавиши: o=разжать, c=сжать, q=выход")
-
-    state_text, state_ok, t0, n = "", True, time.perf_counter(), 0
     try:
-        while True:
-            if args.duration > 0 and time.perf_counter() - t0 >= args.duration:
-                break
-            frame = camera.get_aligned_frames()
-            if frame is None:
-                continue
-            n += 1
-            result = pipeline.process(frame, n, False)
-            img = result.overlay
-            draw_buttons(img, state_text, state_ok)
-            cv2.imshow(WINDOW, img)
-
-            key = cv2.waitKey(1) & 0xFF
-            cmd = None
-            if key == ord("q"):
-                break
-            if key == ord("o"):
-                cmd = False
-            elif key == ord("c"):
-                cmd = True
-            if _click is not None:
-                if _inside(_click, _BTN_OPEN):
-                    cmd = False
-                elif _inside(_click, _BTN_CLOSE):
-                    cmd = True
-                _click = None
-            if cmd is not None:
-                state_ok, state_text = send_grip(osv, cmd)
-                print(f"[GRIP] {'сжать' if cmd else 'разжать'}: {state_text}")
+        run_loop(camera, pipeline, osv, args.duration)
     finally:
         camera.stop()
         visualizer.destroy()
