@@ -2,7 +2,7 @@
 &REL 5
 &PARAM EDITMASK = *
 &PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
-DEF dist( )
+DEF dist2( )
 INT Counter_Variable
 INT TCP_VEL
 INT io_id
