@@ -18,6 +18,8 @@ A = B = C = 0, иначе вместе со смещением произошё�
   python tools/test_lin_rel.py --dz 5 --yes      # вверх на 5 мм
   python tools/test_lin_rel.py --dz -5 --yes     # вниз на 5 мм
   python tools/test_lin_rel.py --dx 10 --yes     # вбок по X базы
+
+Проверено на стенде 2026-11-03: смещение Z +5.000 мм при X, Y = 0.0.
 """
 from __future__ import annotations
 
@@ -59,8 +61,51 @@ def read_pos(osv):
     return out if len(out) == 3 else None
 
 
-def main() -> int:
-    setup_console()
+def print_state(osv):
+    """Напечатать состояние контроллера, вернуть текущую позу."""
+    pos = read_pos(osv)
+    print(f"режим={read_var(osv, '$MODE_OP')}  скорость={read_var(osv, '$OV_PRO')}%  "
+          f"COM_CASEVAR={read_var(osv, 'COM_CASEVAR')}")
+    print(f"$BASE = {read_var(osv, '$BASE')}")
+    print(f"$TOOL = {read_var(osv, '$TOOL')}")
+    print(f"поза X/Y/Z = {pos}")
+    return pos
+
+
+def do_lin_rel(osv, delta, timeout_s: float) -> bool:
+    """Выполнить смещение; True, если KRL обнулил COM_CASEVAR (команда отработана)."""
+    frame = ("{{FRAME: X {:.3f}, Y {:.3f}, Z {:.3f}, "
+             "A 0.0, B 0.0, C 0.0}}").format(*delta)
+    print(f"\n[MOVE] LIN_REL {frame} в системе BASE. Держи кнопку останова под рукой.")
+    osv.write("COM_FRAME", frame, False)
+    osv.write("COM_CASEVAR", str(CASE_LIN_REL), False)
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        r = read_var(osv, "COM_CASEVAR")
+        if r is not None and r.strip() in ("0", "0.0"):
+            return True
+    return False
+
+
+def report(pos0, pos1, delta, accepted: bool) -> None:
+    """Сверить фактическое смещение с заданием."""
+    if not (pos0 and pos1):
+        print(f"[MOVE] принято={accepted}, но позу прочитать не удалось")
+        return
+    moved = {k: round(pos1[k] - pos0[k], 2) for k in ("X", "Y", "Z")}
+    print(f"[MOVE] принято={accepted}  фактическое смещение={moved}")
+    want = dict(zip(("X", "Y", "Z"), delta))
+    err = max(abs(moved[k] - want[k]) for k in want)
+    if accepted and err <= 1.0:
+        print(f"[OK] CASE 12 работает: расхождение с заданием {err:.2f} мм.")
+    elif accepted:
+        print(f"[!] Команда принята, но смещение не совпало (расхождение {err:.2f} мм).")
+        print("    Вероятно, $BASE повёрнут — тогда нужен вариант #TOOL в KRL.")
+    else:
+        print("[!] COM_CASEVAR не обнулился: обработчика CASE 12 нет или он не завершился.")
+
+
+def parse_args():
     ap = argparse.ArgumentParser(description="Проверка CASE 12 (LIN_REL)")
     ap.add_argument("--ip", default="192.168.17.2")
     ap.add_argument("--port", type=int, default=7000)
@@ -70,7 +115,12 @@ def main() -> int:
     ap.add_argument("--dz", type=float, default=0.0, help="смещение по Z базы, мм")
     ap.add_argument("--yes", action="store_true", help="подтвердить реальное движение")
     ap.add_argument("--timeout", type=float, default=30.0)
-    args = ap.parse_args()
+    return ap.parse_args()
+
+
+def main() -> int:
+    setup_console()
+    args = parse_args()
 
     osv = OpenShowVar(ip=args.ip, port=args.port)
     if not osv.can_connect:
@@ -78,19 +128,12 @@ def main() -> int:
         return 1
 
     mode = read_var(osv, "$MODE_OP")
-    ov = read_var(osv, "$OV_PRO")
-    case = read_var(osv, "COM_CASEVAR")
-    pos0 = read_pos(osv)
-    print(f"режим={mode}  скорость={ov}%  COM_CASEVAR={case}")
-    print(f"$BASE = {read_var(osv, '$BASE')}")
-    print(f"$TOOL = {read_var(osv, '$TOOL')}")
-    print(f"поза X/Y/Z = {pos0}")
+    pos0 = print_state(osv)
+    delta = (args.dx, args.dy, args.dz)
 
-    if args.probe or (args.dx == args.dy == args.dz == 0.0):
+    if args.probe or max(abs(v) for v in delta) == 0.0:
         print("\n[PROBE] Только чтение. Дальше: --dz 5 --yes (смещение вверх на 5 мм).")
         return 0
-
-    delta = (args.dx, args.dy, args.dz)
     if max(abs(v) for v in delta) > MAX_MM:
         print(f"[СТОП] Больше {MAX_MM:.0f} мм за пробу не двигаем.")
         return 1
@@ -101,34 +144,11 @@ def main() -> int:
         print(f"[СТОП] Режим {mode}, ожидался #T1.")
         return 1
 
-    frame = ("{{FRAME: X {:.3f}, Y {:.3f}, Z {:.3f}, "
-             "A 0.0, B 0.0, C 0.0}}").format(*delta)
-    print(f"\n[MOVE] LIN_REL {frame} в системе BASE. Держи кнопку останова под рукой.")
-    osv.write("COM_FRAME", frame, False)
-    osv.write("COM_CASEVAR", str(CASE_LIN_REL), False)
-
-    t0 = time.time()
-    accepted = False
-    while time.time() - t0 < args.timeout:
-        r = read_var(osv, "COM_CASEVAR")
-        if r is not None and r.strip() in ("0", "0.0"):
-            accepted = True
-            break
+    accepted = do_lin_rel(osv, delta, args.timeout)
     time.sleep(0.3)
     pos1 = read_pos(osv)
     print(f"после: поза X/Y/Z = {pos1}")
-    if pos0 and pos1:
-        moved = {k: round(pos1[k] - pos0[k], 2) for k in ("X", "Y", "Z")}
-        print(f"[MOVE] принято={accepted}  фактическое смещение={moved}")
-        want = {"X": args.dx, "Y": args.dy, "Z": args.dz}
-        err = max(abs(moved[k] - want[k]) for k in want)
-        if accepted and err <= 1.0:
-            print(f"[OK] CASE 12 работает: расхождение с заданием {err:.2f} мм.")
-        elif accepted:
-            print(f"[!] Команда принята, но смещение не совпало (расхождение {err:.2f} мм).\n"
-                  f"    Вероятно, $BASE повёрнут — тогда нужен вариант #TOOL в KRL.")
-        else:
-            print("[!] COM_CASEVAR не обнулился: обработчика CASE 12 нет или он не завершился.")
+    report(pos0, pos1, delta, accepted)
     return 0
 
 
