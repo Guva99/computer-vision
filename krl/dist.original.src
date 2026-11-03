@@ -1,0 +1,64 @@
+&ACCESS RVP
+&REL 5
+&PARAM EDITMASK = *
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+DEF dist( )
+INT Counter_Variable
+INT TCP_VEL
+INT io_id
+INT j_id
+INT program_id
+
+BAS(#INITMOV,0)
+
+PTP $AXIS_ACT
+
+$ADVANCE = 0
+COM_ACTION = 0
+
+COM_CASEVAR = 0
+COM_VALUE1 = 0
+LOOP
+SWITCH COM_CASEVAR
+
+  CASE 1
+    $BASE = COM_FRAME
+    COM_CASEVAR = 0
+  CASE 2
+    $TOOL = COM_FRAME
+    COM_CASEVAR = 0
+  CASE 3
+    $OV_PRO= COM_VALUE1
+    COM_CASEVAR = 0
+  CASE 4
+    FOR Counter_Variable = 1 to COM_LENGTH
+      LIN COM_FRAME_ARRAY[Counter_Variable] C_DIS
+    ENDFOR
+    Counter_Variable = 0
+    COM_CASEVAR = 0
+CASE 5
+    FOR Counter_Variable = 1 to COM_LENGTH
+      PTP COM_FRAME_ARRAY[Counter_Variable] C_DIS
+    ENDFOR
+    Counter_Variable = 0
+    COM_CASEVAR = 0
+  CASE 7
+    $OUT[1]=OUT5
+    $OUT[2]=OUT6
+    COM_CASEVAR =0
+  CASE 8
+    $OUT[3]=OUT7 
+    COM_CASEVAR=0
+ CASE 9
+   COM_CASEVAR=0
+   EXIT
+
+  CASE 10
+    $OUT[10]=OUT7 
+    COM_CASEVAR=0
+ENDSWITCH
+
+ENDLOOP
+
+END
+
