@@ -47,11 +47,12 @@ def _on_mouse(event, x, y, flags, param):
         _click = (x, y)
 
 
-def pixel_to_camera(u: int, v: int, depth, intr, scale: float, win: int = 4):
+def pixel_to_camera(uv, depth, intr, scale: float, win: int = 4):
     """Пиксель + глубина → точка в системе камеры (метры). None, если нет глубины.
 
     Берём медиану по окну: единичный пиксель на краю предмета даёт выброс.
     """
+    u, v = int(uv[0]), int(uv[1])
     h, w = depth.shape[:2]
     y0, y1 = max(0, v - win), min(h, v + win + 1)
     x0, x1 = max(0, u - win), min(w, u + win + 1)
@@ -114,7 +115,7 @@ def save_point(path: Path, p_rob, p_cam, uv, cube_mm: float) -> None:
 def handle_click(uv_click, depth, intr, scale, T_cr):
     """Клик → (пиксель, точка камеры, точка робота) или None, если нет глубины."""
     u, v = uv_click
-    pc = pixel_to_camera(u, v, depth, intr, scale)
+    pc = pixel_to_camera((u, v), depth, intr, scale)
     if pc is None:
         print(f"[!] В точке ({u},{v}) нет глубины — ткни рядом")
         return None
