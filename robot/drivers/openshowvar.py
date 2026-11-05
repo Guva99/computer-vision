@@ -2,6 +2,7 @@
 OpenShowVar - клиент для KUKA VarProxy.
 Основано на https://github.com/linuxsand/py_openshowvar
 """
+import atexit
 import sys
 import struct
 import random
@@ -33,6 +34,8 @@ class OpenShowVar:
 
         try:
             self.sock.connect((self.ip, self.port))
+            # Освобождать слот у прокси даже при аварийном выходе.
+            atexit.register(self.close)
             if read_timeout is not None:
                 self.sock.settimeout(read_timeout)
         except socket.error:
@@ -184,6 +187,20 @@ class OpenShowVar:
         return None
     
     def close(self):
-        """Закрывает соединение."""
-        self.sock.close()
+        """Закрыть соединение. Можно звать повторно — второй раз ничего не делает.
+
+        Зачем это важно: KUKAVARPROXY держит ограниченное число клиентов. Если
+        процесс завершается, не закрыв сокет, слот у сервера остаётся занятым, и
+        после нескольких десятков таких подключений он перестаёт отвечать на
+        запросы, продолжая принимать соединения. Снаружи это выглядит как
+        «порт открыт, но ответа нет», и лечится только перезапуском прокси на
+        пульте. Проверено на стенде 2026-11-05.
+        """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
