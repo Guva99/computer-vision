@@ -47,17 +47,88 @@ def show_state(osv) -> None:
     print(f"хват: $OUT[1]={read_var(osv, '$OUT[1]')}  $OUT[2]={read_var(osv, '$OUT[2]')}")
 
 
+def grip_is_closed(osv):
+    """TRUE/FALSE/None. $OUT[1] — сомкнуть, $OUT[2] — разомкнуть."""
+    o1, o2 = read_var(osv, "$OUT[1]"), read_var(osv, "$OUT[2]")
+    if o1 is None or o2 is None:
+        return None
+    if o1 == "TRUE" and o2 == "FALSE":
+        return True
+    if o1 == "FALSE" and o2 == "TRUE":
+        return False
+    return None
+
+
+def check_grip(osv, case: int):
+    """Состояние хвата должно соответствовать команде.
+
+    Взятие сомкнутыми губками бессмысленно: либо в них уже кубик и его
+    раздавит о магазин, либо они просто закрыты и захватить нечем. Возврат
+    разомкнутыми — тоже: возвращать нечего, а рука поедет к слоту впустую.
+    Проверка дешёвая, а ошибка стоит кубика и удара о стойку.
+    """
+    closed = grip_is_closed(osv)
+    if closed is None:
+        return ("состояние хвата не прочитано ($OUT[1]/$OUT[2]) — "
+                "без него брать и возвращать нельзя")
+    if case == CASE_TAKE and closed:
+        return ("губки СОМКНУТЫ, а команда — взять. Если в них кубик, сперва "
+                "верни его (--put N); если пусто, разожми "
+                "(python tools/test_gripper.py --open)")
+    if case == CASE_PUT and not closed:
+        return "губки РАЗОМКНУТЫ, а команда — вернуть. Возвращать нечего"
+    return None
+
+
+
 def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
     """Выполнить команду магазина и дождаться её завершения."""
     what = "взять из" if case == CASE_TAKE else "вернуть в"
+    why = check_grip(osv, case)
+    if why is not None:
+        print(f"[СТОП] {why}")
+        return False
     print(f"\n[{case}] {what} слот {slot}. Робот поедет — держи кнопку останова.")
+    pos_before = read_var(osv, "$POS_ACT")
     osv.write("COM_VALUE1", str(int(slot)), False)
-    osv.write("COM_CASEVAR", str(case), False)
+    # Запись в KUKAVARPROXY может потеряться, и тогда опрос сразу читает
+    # ноль — команда выглядит выполненной, хотя не начиналась. Поэтому
+    # ждём, пока переменная ПРИМЕТ номер. Повтор безопасен: CASE 20/21
+    # ведут по абсолютной траектории.
+    for attempt in range(3):
+        osv.write("COM_CASEVAR", str(case), False)
+        t_ack = time.perf_counter()
+        while time.perf_counter() - t_ack < 1.0:
+            if (read_var(osv, "COM_CASEVAR") or "").strip() == str(case):
+                break
+        else:
+            print(f"    [повтор {attempt + 1}] контроллер не принял CASE {case}")
+            continue
+        break
+    else:
+        print(f"    [ОШИБКА] CASE {case} не принят за 3 попытки — ничего не поехало")
+        return False
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < timeout_s:
         r = read_var(osv, "COM_CASEVAR")
         if r is not None and r.strip() in ("0", "0.0"):
-            print(f"    выполнено за {time.perf_counter() - t0:.1f} с")
+            dt = time.perf_counter() - t0
+            # Проверка ПО ФАКТУ. Ноль в COM_CASEVAR не доказывает
+            # исполнения: dist3 обнуляет её при старте программы, поэтому
+            # перезапуск с пульта стирает команду, а ожидание видит ноль
+            # и считает это успехом. Так 2026-11-06 взятие кубика было
+            # принято за выполненное, хотя рука не двигалась.
+            want_closed = (case == CASE_TAKE)
+            if grip_is_closed(osv) is not want_closed:
+                need = "сомкнут" if want_closed else "разомкнут"
+                print(f"    [ОШИБКА] хват не в том состоянии: ожидался {need}")
+                print("    Команда НЕ исполнена. Частая причина: программу "
+                      "перезапустили, и её пуск стёр COM_CASEVAR.")
+                return False
+            if read_var(osv, "$POS_ACT") == pos_before:
+                print("    [ОШИБКА] рука не сдвинулась — команда не исполнялась")
+                return False
+            print(f"    выполнено за {dt:.1f} с")
             return True
     print(f"    ТАЙМАУТ {timeout_s:.0f} с — команда не завершилась.")
     print("    Проверь: запущена ли dist3, держишь ли удержание, не ноль ли $OV_PRO.")

@@ -82,16 +82,22 @@ def parse_pos(txt):
     return out
 
 
-def capture(osv, name: str, hint: str):
-    """Снять одну позу. Возвращает dict или None, если оператор пропустил."""
+def capture(osv, name: str, hint: str, wait: bool = True):
+    """Снять одну позу. Возвращает dict или None, если оператор пропустил.
+
+    `wait=False` снимает немедленно: робота к тому моменту уже подвели,
+    и спрашивать нечего. Нужно, когда скрипт запускают не из своего
+    терминала.
+    """
     print(f"\n── {name} ──  {hint}")
-    ans = input("   Подведи робота и нажми Enter (s = пропустить, q = закончить): ")
-    low = ans.strip().lower()
-    if low == "q":
-        return "quit"
-    if low == "s":
-        print("   пропущено")
-        return None
+    if wait:
+        ans = input("   Подведи робота и нажми Enter (s = пропустить, q = закончить): ")
+        low = ans.strip().lower()
+        if low == "q":
+            return "quit"
+        if low == "s":
+            print("   пропущено")
+            return None
     axis = parse_axis(read_var(osv, "$AXIS_ACT"))
     pos = parse_pos(read_var(osv, "$POS_ACT"))
     if axis is None:
@@ -131,12 +137,30 @@ def dump_yaml(data: dict, path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def load_existing(path: Path) -> dict:
+    """Прочитать уже снятые позы. Без этого снятие одной позы стирало бы
+    остальные: раньше в файл писалось только то, что снято в этом запуске,
+    а прежние точки оставались лишь в .bak."""
+    if not path.exists():
+        return {}
+    try:
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return data.get("poses") or {}
+    except Exception as e:
+        print(f"[ВНИМАНИЕ] Прежний файл не разобран ({e}) — "
+              f"позы из него не сохранятся, смотри .bak")
+        return {}
+
+
 def parse_args():
     ap = argparse.ArgumentParser(description="Снятие опорных поз робота в YAML")
     ap.add_argument("--ip", default="192.168.17.2")
     ap.add_argument("--port", type=int, default=7000)
     ap.add_argument("--out", default="task/poses.yaml")
     ap.add_argument("--only", nargs="*", default=None, help="снять только эти позы")
+    ap.add_argument("--now", action="store_true",
+                    help="снять немедленно, без ожидания Enter")
     ap.add_argument("--slot-pitch-mm", type=float, default=70.0,
                     help="шаг между слотами магазина (замерено линейкой)")
     ap.add_argument("--cube-mm", type=float, default=0.0,
@@ -156,7 +180,7 @@ def main() -> int:
     todo = [(n, h) for n, h in POSES if not args.only or n in args.only]
     captured = {}
     for name, hint in todo:
-        res = capture(osv, name, hint)
+        res = capture(osv, name, hint, wait=not args.now)
         if res == "quit":
             break
         if res:
@@ -167,6 +191,12 @@ def main() -> int:
         return 0
 
     out = Path(args.out)
+    merged = load_existing(out)
+    kept = [n for n in merged if n not in captured]
+    merged.update(captured)
+    if kept:
+        print("")
+        print(f"сохранены прежние позы: {', '.join(kept)}")
     data = {
         "meta": {
             "slot_pitch_mm": args.slot_pitch_mm,
@@ -175,7 +205,7 @@ def main() -> int:
             "base": 0, "tool": 0,
             "created": datetime.now().isoformat(timespec="seconds"),
         },
-        "poses": captured,
+        "poses": merged,
     }
     if out.exists():
         import shutil
@@ -185,7 +215,7 @@ def main() -> int:
     print(f"\n[OK] Снято поз: {len(captured)} → {out}")
     for n in captured:
         print(f"   {n}")
-    missing = [n for n, _ in POSES if n not in captured]
+    missing = [n for n, _ in POSES if n not in merged]
     if missing:
         print(f"   не снято: {', '.join(missing)} — допиши через --only")
     return 0

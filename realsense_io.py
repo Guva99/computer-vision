@@ -28,7 +28,7 @@ class AppConfig:
     # Мониторинг ресурсов ПК (CPU/RAM/GPU) для анализа нагрузки в статье
     perf_monitor: bool = True            # снимать характеристики и писать CSV
     perf_overlay: bool = True            # показывать CPU/RAM/GPU на кадре
-    perf_window: bool = True             # отдельное окно с графиками (как в 2D-программе)
+    perf_window: bool = False             # отдельное окно с графиками (как в 2D-программе)
     perf_gpu_every_n: int = 15           # снимать GPU раз в N кадров (счётчик дороговат)
     perf_log_path: str = "captures/perf_log.csv"
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
@@ -445,7 +445,7 @@ class AppConfig:
     # серий: запись сценария должна длиться ровно столько, сколько объявлено.
     run_duration_s: float = 0.0
     # Debug
-    show_debug_masks: bool = True  # нажмите d в окне для toggle или выставьте True здесь
+    show_debug_masks: bool = False  # нажмите d в окне для toggle или выставьте True здесь
 
 
 class RealSenseCamera:
