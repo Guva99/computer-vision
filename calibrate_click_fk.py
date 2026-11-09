@@ -103,10 +103,11 @@ _img_pts: List[np.ndarray] = []
 _obj_pts: List[np.ndarray] = []
 _labels: List[str] = []
 _pending_click: Optional[Tuple[int, int]] = None
+_pending_angles: Optional[np.ndarray] = None
 
 
 def _mouse_cb(event, x, y, _flags, _param):
-    global _pending_click
+    global _pending_click, _pending_angles
     if event == cv2.EVENT_LBUTTONDOWN:
         _pending_click = (x, y)
 
@@ -131,6 +132,34 @@ def _connect_robot(ip: str, port: int, timeout: float = 3.0) -> Optional["OpenSh
         sock.close()
         print(f"[WARN] Robot not reachable ({e}) — manual angle entry mode.")
         return None
+
+
+def _clear_pending() -> None:
+    """Сбросить незавершённый клик вместе со снятыми при нём углами."""
+    global _pending_click, _pending_angles
+    _pending_click = None
+    _pending_angles = None
+
+
+def _capture_angles_stable(osv, tol_deg: float = 0.05):
+    """Углы в момент КЛИКА, с проверкой, что рука стоит.
+
+    Прежде они читались при нажатии клавиши назначения — на секунду-другую
+    позже клика. Сдвинулась рука за это время — и 3D-точка посчитана для
+    другой позы, чем на картинке. Это записано в extrinsic.json как причина
+    остатков 12..94 px. Два чтения подряд ловят движение.
+    """
+    a1 = _read_joint_angles(osv)
+    a2 = _read_joint_angles(osv)
+    if a1 is None or a2 is None:
+        print("[SKIP] Углы не прочитаны — точка пропущена.")
+        return None
+    drift = float(np.max(np.abs(a1 - a2)))
+    if drift > tol_deg:
+        print(f"[SKIP] Рука движется (расхождение {drift:.3f} град между "
+              f"двумя чтениями). Дождись полной остановки и кликни снова.")
+        return None
+    return 0.5 * (a1 + a2)
 
 
 def _read_joint_angles(osv: "OpenShowVar") -> Optional[np.ndarray]:
@@ -365,7 +394,7 @@ def _draw(frame, pending_uv, robot_connected) -> np.ndarray:
 
 def main():
     setup_console()
-    global _pending_click
+    global _pending_click, _pending_angles
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="extrinsic.json")
@@ -425,6 +454,9 @@ def main():
         if frame is None:
             continue
 
+        if _pending_click is not None and _pending_angles is None and osv is not None:
+            _pending_angles = _capture_angles_stable(osv)
+            _pending_click = _pending_click if _pending_angles is not None else None
         cv2.imshow(_WINDOW, _draw(frame, _pending_click, robot_connected))
         key = cv2.waitKey(1) & 0xFF
 
@@ -432,7 +464,7 @@ def main():
             break
         elif key == ord("r"):
             _img_pts.clear(); _obj_pts.clear(); _labels.clear()
-            _pending_click = None
+            _clear_pending()
             print("[RESET]")
         elif key == ord("d"):
             if _img_pts:
@@ -456,20 +488,20 @@ def main():
 
             # get angles (robot read or manual terminal)
             if osv is not None:
-                angles = _read_joint_angles(osv)
+                angles = _pending_angles
             else:
                 print(f"  Назначаю {joint_name} для клика {_pending_click}")
                 angles = _ask_angles_terminal()
             if angles is None:
                 print("[SKIP] Нет углов — точка пропущена.")
-                _pending_click = None
+                _clear_pending()
                 continue
 
             try:
                 p3d = _joint_3d(angles, joint_idx, gripper_m)
             except Exception as e:
                 print(f"[FK ERROR] {e}")
-                _pending_click = None
+                _clear_pending()
                 continue
 
             # Страховка от противоречивых точек: если такая 3D-координата уже
@@ -485,7 +517,7 @@ def main():
                 print(f"[DUP] {joint_name}: 3D-точка совпадает с уже набранной "
                       f"{_labels[dup]} (P{dup + 1}) — НЕ добавлено. Для PnP это "
                       f"противоречие: одна точка пространства в двух пикселях.")
-                _pending_click = None
+                _clear_pending()
                 continue
 
             _img_pts.append(np.array(_pending_click, dtype=np.float64))
@@ -493,7 +525,7 @@ def main():
             _labels.append(joint_name)
             print(f"[P{len(_img_pts)}] {joint_name}  pixel={_pending_click}  "
                   f"3D=({p3d[0]*1000:.1f}, {p3d[1]*1000:.1f}, {p3d[2]*1000:.1f}) mm")
-            _pending_click = None
+            _clear_pending()
 
     cv2.destroyAllWindows()
     if pipeline is not None:

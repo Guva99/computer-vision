@@ -32,7 +32,7 @@ class AppConfig:
     perf_gpu_every_n: int = 15           # снимать GPU раз в N кадров (счётчик дороговат)
     perf_log_path: str = "captures/perf_log.csv"
     # Толстый «капсульный» FK-скелет (обтягивает тело руки по радиусам звеньев)
-    fk_skeleton_thick: bool = True       # False = тонкая ось 2px
+    fk_skeleton_thick: bool = False      # False = тонкая ось 2px
     fk_skeleton_alpha: float = 0.45      # прозрачность толстого скелета (рука просвечивает)
     fk_skeleton_thick_scale: float = 0.7 # множитель толщины (1.0 = полный радиус коллизии)
     output_dir: str = "captures"

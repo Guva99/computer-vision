@@ -4,7 +4,7 @@
     "robot/services/joint_reader.py -> realsense_io"
   ],
   "oversized_files": {
-    "calibrate_click_fk.py": 512,
+    "calibrate_click_fk.py": 544,
     "calibrate_handeye.py": 498,
     "collision.py": 686,
     "gripper_detection.py": 1543,
@@ -65,7 +65,7 @@
       2
     ],
     "calibrate_click_fk.py:main": [
-      141,
+      144,
       0
     ],
     "calibrate_handeye.py:_solve_and_save": [
