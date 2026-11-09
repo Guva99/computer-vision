@@ -81,33 +81,21 @@ def check_grip(osv, case: int):
 
 
 
-def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
-    """Выполнить команду магазина и дождаться её завершения."""
-    what = "взять из" if case == CASE_TAKE else "вернуть в"
-    why = check_grip(osv, case)
-    if why is not None:
-        print(f"[СТОП] {why}")
-        return False
-    print(f"\n[{case}] {what} слот {slot}. Робот поедет — держи кнопку останова.")
-    pos_before = read_var(osv, "$POS_ACT")
+def _send_once(osv, case: int, slot: int, timeout_s: float, pos_before):
+    """Одна попытка. Возвращает ok / not_executed / fail."""
     osv.write("COM_VALUE1", str(int(slot)), False)
-    # Запись в KUKAVARPROXY может потеряться, и тогда опрос сразу читает
-    # ноль — команда выглядит выполненной, хотя не начиналась. Поэтому
-    # ждём, пока переменная ПРИМЕТ номер. Повтор безопасен: CASE 20/21
-    # ведут по абсолютной траектории.
-    for attempt in range(3):
+    for k in range(3):
         osv.write("COM_CASEVAR", str(case), False)
         t_ack = time.perf_counter()
         while time.perf_counter() - t_ack < 1.0:
             if (read_var(osv, "COM_CASEVAR") or "").strip() == str(case):
                 break
         else:
-            print(f"    [повтор {attempt + 1}] контроллер не принял CASE {case}")
+            print(f"    [запись {k + 1}] контроллер не принял CASE {case}")
             continue
         break
     else:
-        print(f"    [ОШИБКА] CASE {case} не принят за 3 попытки — ничего не поехало")
-        return False
+        return "not_executed"
     t0 = time.perf_counter()
     # Часы стоят, пока стоит программа: в T1 оператор отпускает удержание
     # между движениями, и пауза не должна выглядеть как зависшая команда.
@@ -117,23 +105,13 @@ def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
         r = read_var(osv, "COM_CASEVAR")
         if r is not None and r.strip() in ("0", "0.0"):
             dt = time.perf_counter() - t0
-            # Проверка ПО ФАКТУ. Ноль в COM_CASEVAR не доказывает
-            # исполнения: dist3 обнуляет её при старте программы, поэтому
-            # перезапуск с пульта стирает команду, а ожидание видит ноль
-            # и считает это успехом. Так 2026-11-06 взятие кубика было
-            # принято за выполненное, хотя рука не двигалась.
-            want_closed = (case == CASE_TAKE)
-            if grip_is_closed(osv) is not want_closed:
-                need = "сомкнут" if want_closed else "разомкнут"
-                print(f"    [ОШИБКА] хват не в том состоянии: ожидался {need}")
-                print("    Команда НЕ исполнена. Частая причина: программу "
-                      "перезапустили, и её пуск стёр COM_CASEVAR.")
-                return False
-            if read_var(osv, "$POS_ACT") == pos_before:
-                print("    [ОШИБКА] рука не сдвинулась — команда не исполнялась")
-                return False
-            print(f"    выполнено за {dt:.1f} с")
-            return True
+            # Проверка ПО ФАКТУ: ноль не доказывает исполнения, dist3
+            # обнуляет переменную при старте программы.
+            moved = read_var(osv, "$POS_ACT") != pos_before
+            if grip_is_closed(osv) is (case == CASE_TAKE) and moved:
+                print(f"    выполнено за {dt:.1f} с")
+                return "ok"
+            return "not_executed"
         now = time.perf_counter()
         if now >= next_check:
             next_check = now + 5.0
@@ -141,6 +119,34 @@ def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
                 deadline = now + timeout_s
     print(f"    ТАЙМАУТ {timeout_s:.0f} с — команда не завершилась.")
     print("    Проверь: запущена ли dist3, держишь ли удержание, не ноль ли $OV_PRO.")
+    return "fail"
+
+
+def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
+    """Команда магазина с повтором, если она не исполнилась.
+
+    Перезапуск программы с пульта обнуляет COM_CASEVAR в начале dist3 и
+    стирает уже отправленную команду. Проверка по факту это ловит, а
+    повтор безопасен: CASE 20/21 ведут по АБСОЛЮТНОЙ траектории, второй
+    запуск приводит туда же. Отказывать тут нечего — оператор переселектирует
+    программу часто, и обрывать из-за этого цикл бессмысленно.
+    """
+    what = "взять из" if case == CASE_TAKE else "вернуть в"
+    why = check_grip(osv, case)
+    if why is not None:
+        print(f"[СТОП] {why}")
+        return False
+    print("")
+    print(f"[{case}] {what} слот {slot}. Робот поедет — держи кнопку останова.")
+    for attempt in range(1, 4):
+        res = _send_once(osv, case, slot, timeout_s, read_var(osv, "$POS_ACT"))
+        if res == "ok":
+            return True
+        if res == "fail":
+            return False
+        print(f"    [попытка {attempt}] не исполнилась — похоже, программу "
+              f"перезапустили. Отправляю снова.")
+    print("    [ОШИБКА] три попытки подряд не исполнились.")
     return False
 
 

@@ -172,24 +172,63 @@ def preflight(osv, hold_wait_s: float = 300.0) -> str | None:
     return None
 
 
-def send_axis(osv, angles, timeout_s: float) -> bool:
-    """PTP в углы через CASE 11."""
+def read_axis(osv):
+    """Текущие углы A1..A6 или None."""
+    txt = read_var(osv, "$AXIS_ACT")
+    if not txt or "A1 " not in txt:
+        return None
+    try:
+        return [float(txt.split(f"A{k} ")[1].split(",")[0]) for k in range(1, 7)]
+    except (IndexError, ValueError):
+        return None
+
+
+def send_axis(osv, angles, timeout_s: float, tol_deg: float = 0.5) -> bool:
+    """PTP в углы через CASE 11, с проверкой по факту и повтором.
+
+    Перезапуск программы с пульта обнуляет COM_CASEVAR в начале dist3 и
+    стирает отправленную команду: ожидание видит ноль и считает движение
+    выполненным, хотя рука не трогалась. Поэтому сверяем $AXIS_ACT с целью.
+    Повтор безопасен — PTP ведёт в АБСОЛЮТНЫЕ углы.
+    """
     s = axis_str(angles)
     print(f"[PTP углы] -> {s}")
-    osv.write("COM_E6AXIS", s, False)
-    return run_case(osv, CASE_PTP_AXIS, timeout_s)
+    for attempt in range(1, 4):
+        osv.write("COM_E6AXIS", s, False)
+        if not run_case(osv, CASE_PTP_AXIS, timeout_s):
+            return False
+        cur = read_axis(osv)
+        if cur is None:
+            print("    [ВНИМАНИЕ] углы не прочитать — результат не проверен")
+            return True
+        off = max(abs(c - t) for c, t in zip(cur, angles))
+        if off <= tol_deg:
+            return True
+        print(f"    [попытка {attempt}] не пришёл: расхождение {off:.2f} град. "
+              f"Похоже, команду стёр перезапуск программы. Отправляю снова.")
+    print("    [ОШИБКА] три попытки подряд не привели в позу.")
+    return False
 
 
 def send_lin(osv, xyz, abc, timeout_s: float) -> bool:
-    """LIN в декартову точку через массив (две строки, исполняется вторая)."""
+    """LIN в точку через массив, с проверкой по факту и повтором.
+
+    Повтор по той же причине, что у PTP: стёртая перезапуском команда
+    выглядит выполненной. Цель абсолютная, второй запуск приводит туда же.
+    """
     f = frame_str(xyz, abc)
     print(f"[LIN] -> {f}")
-    osv.write("COM_FRAME_ARRAY[0]", f, False)
-    osv.write("COM_FRAME_ARRAY[1]", f, False)
-    osv.write("COM_LENGTH", "1", False)
-    if not run_case(osv, CASE_LIN_ARRAY, timeout_s):
-        return False
-    return reached(osv, xyz)
+    for attempt in range(1, 4):
+        osv.write("COM_FRAME_ARRAY[0]", f, False)
+        osv.write("COM_FRAME_ARRAY[1]", f, False)
+        osv.write("COM_LENGTH", "1", False)
+        if not run_case(osv, CASE_LIN_ARRAY, timeout_s):
+            return False
+        if reached(osv, xyz):
+            return True
+        print(f"    [попытка {attempt}] отправляю снова")
+    print("    [ОШИБКА] три попытки подряд не привели в точку.")
+    return False
 
 
 def send_grip(osv, close: bool) -> bool:
