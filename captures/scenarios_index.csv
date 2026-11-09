@@ -40,3 +40,4 @@ S05_cube_on_path_fast,6,3D,cube,0.03,50,normal,False,True,0,0,0,C:\Users\user\De
 S09_speed_70,1,3D,cube,0.03,70,normal,False,True,1,180,1,C:\Users\user\Desktop\python projects\cloud_point_3d\captures\scenarios\S09_speed_70\run_01_3d
 S09_speed_70,2,3D,cube,0.03,70,normal,False,True,1,53,1,C:\Users\user\Desktop\python projects\cloud_point_3d\captures\scenarios\S09_speed_70\run_02_3d
 S10_speed_100,1,3D,cube,0.03,100,normal,False,True,0,0,,C:\Users\user\Desktop\python projects\cloud_point_3d\captures\scenarios\S10_speed_100\run_01_3d
+T2_baseline_tower,1,3D,tower_own_workpiece,,30,normal,False,False,0,1460,,C:\Users\user\Desktop\python projects\cloud_point_3d\captures\scenarios\T2_baseline_tower\run_01_3d

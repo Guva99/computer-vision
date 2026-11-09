@@ -8,12 +8,12 @@
     "calibrate_handeye.py": 498,
     "collision.py": 686,
     "gripper_detection.py": 1543,
-    "realsense_io.py": 576,
+    "realsense_io.py": 590,
     "robot/services/robot_service.py": 519,
     "tools/annotate.py": 425,
     "tools/compute_metrics.py": 504,
     "tools/run_experiments.py": 1133,
-    "vision/collision_service.py": 729
+    "vision/collision_service.py": 790
   },
   "oversized_functions": {
     "app/decision_log.py:update": [
@@ -237,7 +237,7 @@
       7
     ],
     "vision/collision_service.py:evaluate": [
-      254,
+      258,
       11
     ],
     "vision/gripper_service.py:detect_gripper": [
@@ -270,5 +270,5 @@
     ]
   },
   "getattr_cfg_sites": 0,
-  "bool_flags": 53
+  "bool_flags": 54
 }

@@ -136,6 +136,9 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="куда писать decisions.csv")
     ap.add_argument("--scenario-id", default=None,
                     help="id сценария для логов (по умолчанию из пути записи)")
+    ap.add_argument("--task-states", default=None, metavar="POSES_YAML",
+                    help="восстановить фазу техпроцесса из углов записи и "
+                         "подсунуть её модели задачи (для абляции ожидаемой сцены)")
     ap.add_argument("--set", dest="overrides", nargs="*", default=None,
                     metavar="ИМЯ=ЗНАЧЕНИЕ", help="переопределить поля AppConfig")
     args = ap.parse_args()
@@ -150,6 +153,19 @@ def main() -> int:
     extra = parse_overrides(args.overrides, config_types())
     sid = args.scenario_id if args.scenario_id is not None else scenario_from_path(args.recording)
     cfg = build_config(str(rec), str(out), sid, extra)
+
+    if args.task_states:
+        # Запись T2_baseline_tower снята до появления файла состояния, поэтому
+        # фаза восстанавливается из записанных углов. Пересниматься нельзя:
+        # сравнение правил обязано идти на ОДНИХ И ТЕХ ЖЕ кадрах.
+        from task.reconstruct import load_build_pose, reconstruct
+        from task.state import set_frame_states
+        bxy, bz = load_build_pose(args.task_states)
+        states = reconstruct(str(rec / "joints.csv"), bxy, bz)
+        set_frame_states(states)
+        n_tower = sum(1 for v in states.values() if v.cubes_placed > 0)
+        print(f"[REPLAY] состояние восстановлено: {len(states)} кадров, "
+              f"со стопкой на столе {n_tower}")
 
     from app.runner import AppRunner  # импорт здесь: тянет cv2/open3d
     AppRunner(cfg).run()

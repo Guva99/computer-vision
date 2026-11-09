@@ -52,6 +52,7 @@ from tools.goto_pose import (  # noqa: E402
     load_poses, pose_xyz, preflight, read_var, send_axis, send_grip, send_lin)
 from tools.magazine import CASE_PUT, CASE_TAKE, grip_is_closed  # noqa: E402
 from tools.magazine import run_case as magazine_case  # noqa: E402
+from task.state import ProcessState, clear_state, write_state  # noqa: E402
 
 CUBE_MM = 40.0
 
@@ -116,29 +117,52 @@ def approach(osv, poses: dict, level: int, args, close: bool) -> bool:
 
 
 def run_level(osv, poses: dict, level: int, slot: int, args) -> bool:
-    """Сборка: взять из слота и поставить на уровень."""
+    """Сборка: взять из слота и поставить на уровень.
+
+    Состояние пишется после КАЖДОГО изменения сцены, а не в начале операции:
+    зрение должно узнать о кубике в губках ровно тогда, когда он там
+    появился, иначе ожидаемая сцена отстаёт от наблюдаемой на целый ход.
+    """
     tr = poses["transport"]["axis"]
     print(f"\n--- СБОРКА: слот {slot} -> уровень {level} ---")
+    st = ProcessState(phase="assemble", level=level, slot=slot,
+                      cubes_placed=level - 1, cube_in_gripper=False)
+    write_state(st, args.state_path)
     if not send_axis(osv, tr, args.timeout):
         return False
     if not magazine_case(osv, CASE_TAKE, slot, args.timeout):
         return False
+    st.cube_in_gripper = True
+    write_state(st, args.state_path)
     if not send_axis(osv, tr, args.timeout):
         return False
-    return approach(osv, poses, level, args, close=False)
+    if not approach(osv, poses, level, args, close=False):
+        return False
+    st.cube_in_gripper, st.cubes_placed = False, level
+    write_state(st, args.state_path)
+    return True
 
 
 def run_unstack(osv, poses: dict, level: int, slot: int, args) -> bool:
     """Разборка: снять с уровня и вернуть в слот."""
     tr = poses["transport"]["axis"]
     print(f"\n--- РАЗБОРКА: уровень {level} -> слот {slot} ---")
+    st = ProcessState(phase="unstack", level=level, slot=slot,
+                      cubes_placed=level, cube_in_gripper=False)
+    write_state(st, args.state_path)
     if not send_axis(osv, tr, args.timeout):
         return False
     if not approach(osv, poses, level, args, close=True):
         return False
+    st.cube_in_gripper, st.cubes_placed = True, level - 1
+    write_state(st, args.state_path)
     if not send_axis(osv, tr, args.timeout):
         return False
-    return magazine_case(osv, CASE_PUT, slot, args.timeout)
+    if not magazine_case(osv, CASE_PUT, slot, args.timeout):
+        return False
+    st.cube_in_gripper = False
+    write_state(st, args.state_path)
+    return True
 
 
 def run_cycle(osv, poses: dict, args) -> bool:
@@ -194,6 +218,8 @@ def parse_args():
     ap.add_argument("--pause-s", type=float, default=3.0, help="пауза между проходами")
     ap.add_argument("--plan", action="store_true", help="показать маршрут и выйти")
     ap.add_argument("--yes", action="store_true", help="подтвердить движение")
+    ap.add_argument("--state-path", default="task/state.json",
+                    help="куда писать состояние процесса для зрения")
     ap.add_argument("--timeout", type=float, default=240.0)
     return ap.parse_args()
 
@@ -240,6 +266,7 @@ def main() -> int:
         ok = runner(osv, poses, args.level, slot, args)
     print(f"\nпозиция: {read_var(osv, '$POS_ACT')}")
     print(f"хват: $OUT[1]={read_var(osv, '$OUT[1]')} $OUT[2]={read_var(osv, '$OUT[2]')}")
+    clear_state(args.state_path)  # процесс кончился — ожидать нечего
     print("\n[ГОТОВО]" if ok else "\n[ПРЕРВАНО] смотри причину выше.")
     osv.close()
     return 0 if ok else 1

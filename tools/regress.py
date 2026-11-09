@@ -102,8 +102,19 @@ def run_replay(recording: Path, out_csv: Path, scenario_id: str,
     cmd = [sys.executable, str(ROOT / "tools" / "replay.py"),
            "--recording", str(recording), "--out", str(out_csv),
            "--scenario-id", scenario_id]
-    if overrides:
-        cmd += ["--set", *overrides]
+    # Калибровки прогона golden подставляются ВСЕГДА: запись и калибровка — одна
+    # пара. Без этого сдвиг камеры (3 ноября) делал оракул бессмысленным, и
+    # отличить поломку от смены стенда было нельзя. Пользовательские --compare
+    # идут следом и при совпадении имён перебивают эти.
+    calib = ROOT / "tests" / "golden" / "calib"
+    pinned = []
+    if (calib / "extrinsic.json").exists():
+        pinned.append(f"extrinsic_path={calib / 'extrinsic.json'}")
+    if (calib / "table_plane.json").exists():
+        pinned.append(f"table_plane_path={calib / 'table_plane.json'}")
+    merged = pinned + list(overrides or [])
+    if merged:
+        cmd += ["--set", *merged]
     t0 = time.perf_counter()
     proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
                           encoding="utf-8", errors="replace")

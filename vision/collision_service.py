@@ -22,6 +22,9 @@ from vision.table_plane import apply_to_config, load_table_plane
 from vision.visualizer import make_o3d_aabb
 
 
+_UNSET = object()
+
+
 @dataclass
 class CollisionFrame:
     scene_objects: list = field(default_factory=list)
@@ -54,6 +57,7 @@ class CollisionService:
         self._no_spheres_frames = 0       # подряд идущие кадры без FK-сфер
         self._tracks: list = []  # временная устойчивость объектов (анти-мигание протечек руки)
         self._known: list = []   # object-permanence: объекты в памяти (координаты стола)
+        self._build_xy = _UNSET
         self._danger_hold = False  # гистерезис DANGER (анти-дребезг на границе порога)
         self._danger_lost = 0      # счётчик кадров удержания DANGER после пропажи объекта
         self._T_rc = None  # кэш inv(T_cr) для workspace-фильтра (база ← камера)
@@ -471,6 +475,59 @@ class CollisionService:
                       f"occluded={n_occ} out={len(out)} empty=[{emp}]")
         return out
 
+    def _expected_build_xy(self):
+        """XY места сборки из заученной позы. Читается один раз и кешируется."""
+        if self._build_xy is not _UNSET:
+            return self._build_xy
+        self._build_xy = None
+        try:
+            from task.reconstruct import load_build_pose
+            self._build_xy = load_build_pose(self.cfg.task_poses_path)[0]
+        except Exception as e:
+            print(f"[task] позы не прочитаны ({e}) — ожидаемая сцена пуста")
+        return self._build_xy
+
+    def _drop_expected(self, objects, fk_projector, joint_angles, frame_count):
+        """Убрать объекты, которые по модели задачи там и должны стоять.
+
+        Отбракованные уходят в тот же механизм, что и прочие причины, поэтому
+        попадают в objects.csv и остаются считаемыми: сколько подавили, видно
+        в логе, а не только в итоговом уровне.
+
+        Если состояние процесса неизвестно или протухло, список ожидаемого
+        пуст и поведение прежнее — отказ в безопасную сторону.
+        """
+        from task import scene as tscene
+        from task import state as tstate
+        st = tstate.current(frame_count, self.cfg.task_state_path,
+                            float(self.cfg.task_state_max_age_s))
+        T_cr = getattr(fk_projector, "T_cr", None)
+        build_xy = self._expected_build_xy()
+        if st is None or T_cr is None or build_xy is None:
+            return objects
+        flange_xy = None
+        if joint_angles is not None and len(joint_angles) >= 6:
+            from kuka_fk import fk_tcp
+            q = fk_tcp(tuple(joint_angles))[0] * 1000.0
+            flange_xy = (float(q[0]), float(q[1]))
+        cols = tscene.expected_columns(st, build_xy, flange_xy,
+                                       pad_mm=float(self.cfg.task_expected_pad_mm))
+        if not cols:
+            return objects
+        max_w = float(self.cfg.task_expected_max_width_mm)
+        kept = []
+        for obj in objects:
+            p_rob = tscene.camera_to_robot_mm(obj.centroid, T_cr)
+            r = tscene.object_radius_mm(getattr(obj, "points", None),
+                                        obj.centroid, T_cr)
+            label = tscene.match(p_rob, r, cols, max_w)
+            if label is None:
+                kept.append(obj)
+            else:
+                self._confirm_rejects.append((obj, f"expected:{label}"))
+        return kept
+
+
     def evaluate(self, masks, fk_projector, points, colors, valid_flat,
                  color_bgr, intrinsics, joint_angles, frame_count, vis) -> CollisionFrame:
         cfg = self.cfg
@@ -643,6 +700,10 @@ class CollisionService:
                 float(cfg.collision_obj_merge_iou),
                 float(cfg.collision_obj_merge_contain),
             )
+        # Модель задачи: убрать ожидаемое (своя же башня, несомый кубик).
+        if bool(cfg.task_expected_scene) and cf.scene_objects:
+            cf.scene_objects = self._drop_expected(
+                cf.scene_objects, fk_projector, joint_angles, frame_count)
         # Растеризация точек объектов нужна только для debug-мозаики
         # (Python-цикл по точкам — дорого). Строим лишь когда показываем debug.
         if cfg.show_debug_masks:
