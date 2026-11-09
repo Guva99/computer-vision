@@ -66,11 +66,27 @@ def axis_str(a) -> str:
 
 
 def wait_done(osv, timeout_s: float):
+    """Ждать завершения команды. Часы стоят, пока стоит программа.
+
+    В T1 оператор отпускает удержание между движениями, и dist3 встаёт.
+    Считать это время в таймаут нельзя: пауза оператора выглядела бы так же,
+    как зависшая команда. 2026-11-09 непрерывный цикл оборвался именно так —
+    на переходе в transport, пока обсуждали постороннее. Поэтому раз в пять
+    секунд смотрим $PRO_STATE и сдвигаем срок, если программа не активна.
+    Чаще не спрашиваем: чтение во время движения стоит 70-90 мс.
+    """
     t0 = time.perf_counter()
-    while time.perf_counter() - t0 < timeout_s:
+    deadline = t0 + timeout_s
+    next_check = t0 + 5.0
+    while time.perf_counter() < deadline:
         r = read_var(osv, "COM_CASEVAR")
         if r is not None and r.strip() in ("0", "0.0"):
             return time.perf_counter() - t0
+        now = time.perf_counter()
+        if now >= next_check:
+            next_check = now + 5.0
+            if read_var(osv, "$PRO_STATE") != "#P_ACTIVE":
+                deadline = now + timeout_s
     return None
 
 

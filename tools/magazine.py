@@ -109,7 +109,11 @@ def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
         print(f"    [ОШИБКА] CASE {case} не принят за 3 попытки — ничего не поехало")
         return False
     t0 = time.perf_counter()
-    while time.perf_counter() - t0 < timeout_s:
+    # Часы стоят, пока стоит программа: в T1 оператор отпускает удержание
+    # между движениями, и пауза не должна выглядеть как зависшая команда.
+    deadline = t0 + timeout_s
+    next_check = t0 + 5.0
+    while time.perf_counter() < deadline:
         r = read_var(osv, "COM_CASEVAR")
         if r is not None and r.strip() in ("0", "0.0"):
             dt = time.perf_counter() - t0
@@ -130,6 +134,11 @@ def run_case(osv, case: int, slot: int, timeout_s: float) -> bool:
                 return False
             print(f"    выполнено за {dt:.1f} с")
             return True
+        now = time.perf_counter()
+        if now >= next_check:
+            next_check = now + 5.0
+            if read_var(osv, "$PRO_STATE") != "#P_ACTIVE":
+                deadline = now + timeout_s
     print(f"    ТАЙМАУТ {timeout_s:.0f} с — команда не завершилась.")
     print("    Проверь: запущена ли dist3, держишь ли удержание, не ноль ли $OV_PRO.")
     return False
